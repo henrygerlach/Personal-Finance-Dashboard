@@ -212,3 +212,76 @@ def is_unresolvable_paypal(booking_text: str | None) -> bool:
     if not booking_text or not is_paypal(booking_text):
         return False
     return not normalize_merchant(booking_text)
+
+
+# --- Cache keys --------------------------------------------------------------
+#
+# The normalized name is what a person and the classifier read. The cache key
+# is a separate, deliberately unreadable form of it, because it has a different
+# job: it has to make two spellings of one merchant collide.
+#
+# Comdirect chops each statement field into 35-character pieces and rejoins
+# them with a space, which lands mid-word often enough to matter — the same
+# shop arrives as "LOGPAY F INANCIAL SERVICES GMBH" and as "LOGPAY FINANCIAL
+# SE RVICES GMBH". Undoing that is not possible in general: at the very same
+# boundary the space is sometimes genuine, and rejoining those would corrupt
+# them. Dropping every space sidesteps the question entirely — the damage
+# cannot survive a form that has no spaces to be wrong about.
+
+#: A prefix must keep at least this many tokens to absorb a longer name, so a
+#: short stem cannot swallow unrelated merchants that happen to start with it.
+_MIN_PREFIX_TOKENS = 2
+
+
+def merchant_key(normalized: str) -> str:
+    """
+    The cache key for a normalized merchant name.
+
+    Spaces are removed, which makes the key immune to Comdirect's mid-word
+    line wrapping. Two names that differ only by where a wrap fell produce one
+    key.
+    """
+    return (normalized or "").replace(" ", "")
+
+
+def shorten_merchant(normalized: str) -> str | None:
+    """
+    Drop the trailing token, or return ``None`` if too little would remain.
+
+    Card payments append the town to the merchant while direct debits do not,
+    so the same shop arrives as both "EDEKA BOECKER" and "EDEKA BOECKER
+    HAMBURG". A lookup that misses can retry with this to find the entry the
+    shorter spelling created.
+    """
+    tokens = (normalized or "").split()
+    if len(tokens) <= _MIN_PREFIX_TOKENS:
+        return None
+    return " ".join(tokens[:-1])
+
+
+def build_canonical_map(merchants) -> dict[str, str]:
+    """
+    Map every merchant name onto the shortest spelling of it in the corpus.
+
+    A name is folded onto another only when dropping its last token yields a
+    name that is itself present — the corpus decides, not a list of towns,
+    which is what keeps this working for statements from anywhere.
+
+    Args:
+        merchants: The normalized names to consider.
+
+    Returns:
+        Every input name mapped to its canonical spelling. Names with nothing
+        to fold onto map to themselves.
+    """
+    present = {name for name in merchants if name}
+    canonical: dict[str, str] = {}
+    # Shortest first, so a fold target is already resolved when it is used and
+    # a chain of suffixes collapses in one pass.
+    for name in sorted(present, key=lambda value: (len(value.split()), len(value))):
+        shorter = shorten_merchant(name)
+        if shorter and shorter in present:
+            canonical[name] = canonical.get(shorter, shorter)
+        else:
+            canonical[name] = name
+    return canonical
