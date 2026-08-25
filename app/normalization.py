@@ -33,10 +33,18 @@ import re
 #: real merchant, when present, sits inside the booking text.
 _PAYPAL_PATTERN = re.compile(r"\bPayPal\b|\bPP\.\d+\.PP\b", re.IGNORECASE)
 
-#: The merchant in a PayPal line sits directly before "Ihr Einkauf bei".
-#: Comdirect wraps that phrase mid-word, so "Einkauf" may arrive split.
+#: The merchant in a PayPal line sits between the last dot-space separator and
+#: "Ihr Einkauf bei". Comdirect wraps that phrase mid-word, so "Einkauf" may
+#: arrive split.
+#:
+#: The separator must be a dot followed by whitespace. A dot inside the name
+#: itself never is ("ASOS.com"), which is what keeps domain merchants intact —
+#: excluding dots from the capture would truncate every one of them to its
+#: top-level domain and file ASOS and Steam under the same key. The leading
+#: ``.*`` is greedy so the *last* separator wins; otherwise the match would
+#: start inside PayPal's own "S.a r.l." and swallow the field label.
 _PAYPAL_MERCHANT = re.compile(
-    r"\.\s*([^,.]*?)\s*,\s*Ihr\s+Ei\s*nkauf\s+bei",
+    r".*\.\s+([^,]*?)\s*,\s*Ihr\s+Ei\s*nkauf\s+bei",
     re.IGNORECASE,
 )
 

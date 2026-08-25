@@ -94,6 +94,38 @@ def test_paypal_merchant_is_found_when_einkauf_is_wrapped_mid_word():
     assert normalize_merchant(text) == "ZALANDO SE"
 
 
+def test_paypal_domain_merchants_keep_their_dots():
+    """
+    A merchant name may contain dots, and cutting at the first one would file
+    every domain under its top-level domain: ASOS and Steam both became "COM"
+    and shared a cache entry, and therefore a category.
+    """
+    asos = (
+        "Auftraggeber: PayPal (Europe) S.a r.l. et Cie, S.C.A. Buchungstext: "
+        ". ASOS.com, Ihr Einkauf bei ASOS.co m Ref. JK2220957"
+    )
+    steam = (
+        "Auftraggeber: PayPal (Europe) S.a.r.l. et Cie., S.C.A. Buchungstext: "
+        "PP.5189.PP . www.steampowered.com, Ihr Einkauf bei "
+    )
+    assert normalize_merchant(asos) == "ASOS.COM"
+    assert normalize_merchant(steam) == "WWW.STEAMPOWERED.COM"
+    assert normalize_merchant(asos) != normalize_merchant(steam)
+
+
+def test_paypal_merchant_is_taken_after_the_last_separator():
+    """
+    PayPal's own name contains dot-space sequences ("S.a r.l. et Cie"), so the
+    merchant must be read from the last separator, not the first — otherwise
+    the field label ends up inside the key.
+    """
+    text = (
+        "Auftraggeber: PayPal (Europe) S.a r.l. et Cie, S.C.A. Buchungstext: "
+        ". ASOS.com, Ihr Einkauf bei"
+    )
+    assert "BUCHUNGSTEXT" not in normalize_merchant(text)
+
+
 def test_paypal_without_a_processor_prefix_still_resolves():
     text = (
         "PayPal (Europe) S.a r.l. et Cie, S.C.A. Buchungstext: "
