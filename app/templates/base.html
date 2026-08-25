@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>{{ title }} · Comdirect Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script>
+      window.CATEGORY_HIERARCHY = {{ CATEGORY_HIERARCHY | tojson }};
+    </script>
+    <script src="/static/theme.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/">
+        <span class="brand-mark" aria-hidden="true"
+          ><i></i><i></i><i></i><i></i
+        ></span>
+        Comdirect Dashboard
+      </a>
+      <nav class="nav" aria-label="Primary">
+        {% set nav_items = [
+          ("Dashboard", "/"),
+          ("Upload", "/upload"),
+          ("Categorize", "/categorize"),
+          ("Rules", "/rules")
+        ] %}
+        {% for label, href in nav_items %}
+          <a
+            class="nav-link{% if active_path == href %} active{% endif %}"
+            href="{{ href }}"
+            {% if active_path == href %}aria-current="page"{% endif %}
+          >
+            {{ label }}
+            {%- if href == "/categorize" and uncategorized_count %}
+            <span class="nav-badge">{{ uncategorized_count }}</span>
+            {%- endif %}
+          </a>
+        {% endfor %}
+      </nav>
+    </header>
+
+    <main class="page">
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>

@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero">
+  <div class="hero-text">
+    <span class="eyebrow">Import</span>
+    <h1>Upload a statement</h1>
+    <p class="subtitle">
+      Comdirect CSV exports. Transactions already in the database are skipped,
+      so re-importing an overlapping export is safe.
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="upload-zone" id="uploadZone" role="button" tabindex="0"
+       aria-label="Choose CSV files or drop them here">
+    <input type="file" id="fileInput" accept=".csv,text/csv" multiple hidden />
+    <div class="upload-content" id="uploadContent">
+      <svg class="upload-mark" width="34" height="34" viewBox="0 0 24 24"
+           fill="none" stroke="currentColor" stroke-width="1.25" aria-hidden="true">
+        <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5" stroke-linecap="round"
+              stroke-linejoin="round" />
+        <path d="M3 15v3.5A1.5 1.5 0 004.5 20h15a1.5 1.5 0 001.5-1.5V15"
+              stroke-linecap="round" />
+      </svg>
+      <p class="upload-title">Choose CSV files</p>
+      <p class="upload-hint">or drop them anywhere in this box</p>
+    </div>
+    <div class="upload-progress" id="uploadProgress" hidden>
+      <div class="spinner"></div>
+      <p class="upload-hint">Importing…</p>
+    </div>
+  </div>
+
+  <div class="upload-result" id="uploadResult" hidden></div>
+</section>
+
+<script>
+  (function () {
+    const zone = document.getElementById('uploadZone');
+    const input = document.getElementById('fileInput');
+    const content = document.getElementById('uploadContent');
+    const progress = document.getElementById('uploadProgress');
+    const result = document.getElementById('uploadResult');
+
+    let resultTimer = null;
+
+    const openPicker = () => input.click();
+    zone.addEventListener('click', openPicker);
+    zone.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        openPicker();
+      }
+    });
+
+    input.addEventListener('change', (e) => {
+      const files = Array.from(e.target.files || []);
+      if (files.length) upload(files);
+    });
+
+    ['dragenter', 'dragover'].forEach((type) =>
+      zone.addEventListener(type, (e) => {
+        e.preventDefault();
+        zone.classList.add('drag-over');
+      })
+    );
+    ['dragleave', 'dragend'].forEach((type) =>
+      zone.addEventListener(type, () => zone.classList.remove('drag-over'))
+    );
+    zone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      zone.classList.remove('drag-over');
+      const files = Array.from(e.dataTransfer.files || []);
+      if (files.length) upload(files);
+    });
+
+    async function upload(files) {
+      const csvFiles = files.filter((f) => f.name.toLowerCase().endsWith('.csv'));
+      if (!csvFiles.length) {
+        show('error', 'Those are not CSV files. Export your statement as CSV and try again.');
+        return;
+      }
+
+      setBusy(true);
+
+      const body = new FormData();
+      csvFiles.forEach((file) => body.append('files', file));
+
+      try {
+        const response = await fetch('/upload', { method: 'POST', body });
+        const data = await response.json();
+        if (response.ok) {
+          show('success', summarize(data), data.files);
+        } else {
+          show('error', data.detail || 'The import failed.');
+        }
+      } catch (error) {
+        show('error', `Could not reach the server: ${error.message}`);
+      } finally {
+        setBusy(false);
+        input.value = '';
+      }
+    }
+
+    function setBusy(busy) {
+      zone.classList.toggle('uploading', busy);
+      content.hidden = busy;
+      progress.hidden = !busy;
+    }
+
+    function summarize(data) {
+      const count = Number(data.imported) || 0;
+      if (count === 0) {
+        return 'No new transactions — everything in that file was already imported.';
+      }
+      return `Imported ${count} transaction${count === 1 ? '' : 's'}.`;
+    }
+
+    function show(type, message, files) {
+      clearTimeout(resultTimer);
+      result.hidden = false;
+      result.className = `upload-result ${type}`;
+      result.innerHTML = '';
+
+      const body = document.createElement('div');
+      const headline = document.createElement('p');
+      headline.textContent = message;
+      body.appendChild(headline);
+
+      if (Array.isArray(files) && files.length) {
+        const list = document.createElement('ul');
+        list.className = 'upload-report';
+        files.forEach((file) => {
+          const row = document.createElement('li');
+          row.textContent =
+            `${file.filename} — ${file.imported} imported, ${file.skipped} skipped`;
+          list.appendChild(row);
+        });
+        body.appendChild(list);
+      }
+      result.appendChild(body);
+
+      if (type === 'success') {
+        const link = document.createElement('a');
+        link.className = 'ghost-button';
+        link.href = '/categorize';
+        link.textContent = 'Categorize';
+        result.appendChild(link);
+        // Errors stay until the next attempt; a success can fade out.
+        resultTimer = setTimeout(() => { result.hidden = true; }, 12000);
+      } else {
+        const dismiss = document.createElement('button');
+        dismiss.className = 'icon-button';
+        dismiss.type = 'button';
+        dismiss.setAttribute('aria-label', 'Dismiss');
+        dismiss.innerHTML = '&times;';
+        dismiss.addEventListener('click', () => { result.hidden = true; });
+        result.appendChild(dismiss);
+      }
+    }
+  })();
+</script>
+{% endblock %}

@@ -1,0 +1,10 @@
+;
+"Umsätze Girokonto";"Zeitraum: 01.10.2024 - 31.10.2024";
+
+
+"Buchungstag";"Wertstellung (Valuta)";"Vorgang";"Buchungstext";"Umsatz in EUR";
+"29.10.2024";"29.10.2024";"Lastschrift / Belastung";"Auftraggeber: PayPal Europe";"-3,76";
+"28.10.2024";"28.10.2024";"Übertrag / Überweisung";"Auftraggeber: Gehalt";"1.000,00";
+"25.10.2024";"25.10.2024";"Lastschrift / Belastung";"Auftraggeber: AMAZON";"-20,71";
+"21.10.2024";"21.10.2024";"Übertrag / Überweisung";"Empfänger: KrankenkasseKto";"100,00";
+"14.10.2024";"13.10.2024";"Visa-Umsatz";" Lieferando";"-15,56";

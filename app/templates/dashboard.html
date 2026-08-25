@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero">
+  <div class="hero-text">
+    <span class="eyebrow">Statement</span>
+    <h1>Where the money went</h1>
+    <p class="subtitle" id="period-summary"></p>
+  </div>
+</section>
+
+<div class="filterbar">
+  <div class="control-group">
+    <label for="year-select">Period</label>
+    <select id="year-select" class="select-dropdown">
+      <option value="">All years</option>
+    </select>
+  </div>
+  <div class="control-group">
+    <label for="category-type-select">Granularity</label>
+    <select id="category-type-select" class="select-dropdown">
+      <option value="minor" selected>Minor categories</option>
+      <option value="major">Major categories</option>
+    </select>
+  </div>
+</div>
+
+<div class="chart-container stagger">
+  {% if render_balance_section %}
+  <section class="section-block" aria-labelledby="balances-title">
+    <div class="panel-head">
+      <h2 class="panel-title" id="balances-title">Balances</h2>
+      <span class="balance-meta" id="balances-loaded-at">Loading…</span>
+    </div>
+    <div class="balance-strip" id="balances-grid">
+      <div class="balance-card">
+        <h4>Girokonto</h4>
+        <p class="balance-amount">—</p>
+      </div>
+    </div>
+  </section>
+  {% endif %}
+
+  <!-- The spectrum doubles as the colour key for every chart below it. -->
+  <section class="section-block spectrum" aria-labelledby="spectrum-title">
+    <div class="panel-head">
+      <h2 class="panel-title" id="spectrum-title">Spend by major category</h2>
+      <span class="spectrum-caption" id="spectrum-caption">Expenses</span>
+    </div>
+    <div class="spectrum-bar" id="spectrum-bar" role="img"
+         aria-label="Proportional spend by major category"></div>
+    <div class="spectrum-keys" id="spectrum-keys"></div>
+  </section>
+
+  <div class="charts-grid">
+    <section class="chart-section">
+      <div class="chart-header">
+        <h2 class="chart-title">Monthly flow by category</h2>
+      </div>
+      <div class="chart-toolbar">
+        <div class="control-group">
+          <label id="category-label" for="category-button">Minor categories</label>
+          <div class="custom-multiselect">
+            <button
+              type="button"
+              class="multiselect-button"
+              id="category-button"
+              aria-expanded="false"
+              aria-haspopup="true"
+            >
+              <span id="category-display">All categories</span>
+              <svg width="12" height="8" viewBox="0 0 12 8" aria-hidden="true">
+                <path d="M1 1l5 5 5-5" />
+              </svg>
+            </button>
+            <div class="multiselect-dropdown" id="category-dropdown"></div>
+          </div>
+        </div>
+      </div>
+      <div class="chart-wrapper">
+        <canvas id="monthlyChart"></canvas>
+      </div>
+    </section>
+
+    <section class="chart-section">
+      <div class="chart-header">
+        <h2 class="chart-title">Net cashflow</h2>
+      </div>
+      <div class="chart-toolbar">
+        <div class="total-display">
+          <span class="total-label">Total for period</span>
+          <span class="total-value" id="total-cashflow">—</span>
+        </div>
+      </div>
+      <div class="chart-wrapper">
+        <canvas id="cashflowChart"></canvas>
+      </div>
+    </section>
+  </div>
+
+  <div class="charts-grid">
+    <section class="chart-section">
+      <div class="chart-header">
+        <h2 class="chart-title">Money in</h2>
+        <span class="chart-total" id="revenue-total">—</span>
+      </div>
+      <div class="breakdown">
+        <div class="breakdown-chart">
+          <canvas id="revenuePieChart"></canvas>
+        </div>
+        <ol class="breakdown-list" id="revenue-legend"></ol>
+      </div>
+    </section>
+
+    <section class="chart-section">
+      <div class="chart-header">
+        <h2 class="chart-title">Money out</h2>
+        <span class="chart-total" id="expense-total">—</span>
+      </div>
+      <div class="breakdown">
+        <div class="breakdown-chart">
+          <canvas id="expensePieChart"></canvas>
+        </div>
+        <ol class="breakdown-list" id="expense-legend"></ol>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script>
+  window.RENDER_BALANCES = {{ render_balance_section | tojson }};
+</script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
+<script src="/static/dashboard.js"></script>
+{% endblock %}

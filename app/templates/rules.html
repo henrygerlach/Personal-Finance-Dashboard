@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero">
+  <div class="hero-text">
+    <span class="eyebrow">Rule library</span>
+    <h1>Rules</h1>
+    <p class="subtitle">
+      Rules are evaluated in creation order, so the first match wins. Deleting
+      one re-files every transaction it touched.
+    </p>
+  </div>
+</section>
+
+<section class="rules-toolbar">
+  <form class="rules-search" method="get" action="/rules" role="search">
+    <input
+      class="rules-search-input"
+      type="search"
+      name="search"
+      aria-label="Search rules"
+      placeholder="Search substring, category or process"
+      value="{{ search }}"
+    />
+    <button type="submit" class="primary-button">Search</button>
+    {% if search %}
+    <a href="/rules" class="ghost-button">Clear</a>
+    {% endif %}
+  </form>
+  <p class="small-muted">
+    {{ rules|length }} rule{{ "s" if rules|length != 1 else "" }}
+  </p>
+</section>
+
+{% if rules %}
+<div class="rules-card">
+  <table class="rules-table">
+    <thead>
+      <tr>
+        <th scope="col">Major</th>
+        <th scope="col">Minor</th>
+        <th scope="col">Substring</th>
+        <th scope="col">Process</th>
+        <th scope="col"><span class="visually-hidden">Delete</span></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for rule in rules %}
+      <tr>
+        <td>
+          <span class="category-pill">
+            <span class="option-swatch" data-category="{{ rule.major }}"></span>
+            {{ rule.major }}
+          </span>
+        </td>
+        <td>{{ rule.minor }}</td>
+        <td class="mono-cell">{{ rule.substring }}</td>
+        <td class="mono-cell">{{ rule.process or "—" }}</td>
+        <td>
+          <form method="post" action="/rules/{{ rule.id }}/delete"
+                onsubmit="return confirm('Delete this rule? Transactions it filed will be re-evaluated.');">
+            <button class="icon-button is-danger" type="submit"
+                    aria-label="Delete rule matching {{ rule.substring }}">&times;</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="panel-outline">
+  <p class="panel-title">
+    {% if search %}No rules match “{{ search }}”{% else %}No rules yet{% endif %}
+  </p>
+  <p class="panel-text">
+    {% if search %}
+      Try a shorter search term.
+    {% else %}
+      Rules are created while categorizing transactions.
+    {% endif %}
+  </p>
+  <a class="primary-button" href="{% if search %}/rules{% else %}/categorize{% endif %}">
+    {% if search %}Show all rules{% else %}Start categorizing{% endif %}
+  </a>
+</div>
+{% endif %}
+
+<script>
+  // Colour each major with the same hue the charts use.
+  document.querySelectorAll('.option-swatch[data-category]').forEach((node) => {
+    node.style.background = window.Theme.categoryColor(node.dataset.category);
+  });
+</script>
+{% endblock %}
