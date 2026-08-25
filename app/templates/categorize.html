@@ -1,0 +1,206 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero">
+  <div class="hero-text">
+    <span class="eyebrow">Review queue</span>
+    <h1>Categorize</h1>
+    <p class="subtitle">
+      Write one rule per transaction. Every future transaction whose booking
+      text matches will be filed automatically.
+      <button class="info-bubble" id="rulesInfoBtn" aria-label="How rules work">i</button>
+    </p>
+  </div>
+  {% if uncategorized_count %}
+  <div class="hero-stat">
+    <span class="hero-stat-value">{{ uncategorized_count }}</span>
+    <span class="label">
+      left to file{% if skip %} · at #{{ skip + 1 }}{% endif %}
+    </span>
+  </div>
+  {% endif %}
+</section>
+
+<div id="rulesModal" class="modal" role="dialog" aria-modal="true"
+     aria-labelledby="rulesModalTitle" hidden>
+  <div class="modal-content" role="document">
+    <div class="modal-header">
+      <h2 id="rulesModalTitle">How rules work</h2>
+      <button class="icon-button" id="closeModal" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p>
+        A rule files a transaction by matching text in its booking line, and
+        optionally its process code.
+      </p>
+
+      <h3>Parts of a rule</h3>
+      <ul>
+        <li>
+          <strong>Substring</strong> — a phrase that must appear in the booking
+          text. Enter a number instead to match the first n words of this
+          transaction's booking text.
+        </li>
+        <li>
+          <strong>Process</strong> — the Vorgang code. Leave it off to match any
+          process.
+        </li>
+      </ul>
+
+      <h3>Order matters</h3>
+      <p>Rules are evaluated in the order they were created; the first match wins.</p>
+    </div>
+  </div>
+</div>
+
+<section class="categorize-layout">
+  {% if transaction %}
+    <article class="transaction-card">
+      <div class="transaction-meta">
+        <span>{{ transaction.date.strftime("%d %b %Y") }}</span>
+      </div>
+      <p class="transaction-amount" data-money="{{ transaction.amount }}">
+        {{ "%.2f"|format(transaction.amount) }} €
+      </p>
+      <p class="transaction-booking">{{ transaction.booking_text }}</p>
+      <dl class="transaction-facts">
+        <dt>Process</dt>
+        <dd>{{ transaction.process or "None" }}</dd>
+      </dl>
+    </article>
+
+    <form class="rule-form" method="post" action="/categorize">
+      <input type="hidden" name="transaction_id" value="{{ transaction.id }}" />
+
+      <div class="form-group">
+        <label for="major_category">Major category</label>
+        <select id="major_category" name="major_category" required>
+          <option value="" disabled selected>Choose a major category</option>
+          {% for major in categories.keys() %}
+          <option value="{{ major }}">{{ major }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label for="minor_category">Minor category</label>
+        <select id="minor_category" name="minor_category" required disabled>
+          <option value="" disabled selected>Choose a major category first</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label for="substring">Matching substring</label>
+        <input
+          id="substring"
+          name="substring"
+          type="text"
+          placeholder="e.g. REWE"
+          autocomplete="off"
+          spellcheck="false"
+          required
+        />
+        <p class="field-note">
+          Must appear in the booking text. A number n matches the first n words
+          instead.
+        </p>
+      </div>
+
+      <div class="form-group">
+        <label>Process</label>
+        <div class="checkbox-row">
+          <input
+            id="use_process"
+            name="use_process"
+            type="checkbox"
+            value="1"
+            {% if not transaction.process %}disabled{% endif %}
+          />
+          <label for="use_process">
+            Also require process “{{ transaction.process or "none" }}”
+          </label>
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <a class="ghost-button" href="/categorize?skip={{ skip + 1 }}">Skip</a>
+        <button type="submit" class="primary-button">Save rule</button>
+      </div>
+    </form>
+
+    <script>
+      (function () {
+        const categoryData = {{ categories | tojson }};
+        const majorSelect = document.getElementById('major_category');
+        const minorSelect = document.getElementById('minor_category');
+
+        majorSelect.addEventListener('change', function () {
+          const minors = categoryData[this.value] || [];
+          minorSelect.innerHTML =
+            '<option value="" disabled selected>Choose a minor category</option>';
+          minors.forEach(function (minor) {
+            const option = document.createElement('option');
+            option.value = minor;
+            option.textContent = minor;
+            minorSelect.appendChild(option);
+          });
+          minorSelect.disabled = minors.length === 0;
+        });
+      })();
+    </script>
+  {% else %}
+    <div class="panel-outline is-centered">
+      <p class="panel-title">
+        {% if uncategorized_count %}Nothing left at this position{% else %}Queue is empty{% endif %}
+      </p>
+      <p class="panel-text">
+        {% if uncategorized_count %}
+          You skipped past the end of the queue.
+        {% else %}
+          Every transaction has a category. Upload a new statement to add more.
+        {% endif %}
+      </p>
+      {% if uncategorized_count %}
+      <a class="primary-button" href="/categorize">Back to the first one</a>
+      {% else %}
+      <a class="primary-button" href="/upload">Upload a statement</a>
+      {% endif %}
+    </div>
+  {% endif %}
+</section>
+
+<script>
+  (function () {
+    const modal = document.getElementById('rulesModal');
+    const openBtn = document.getElementById('rulesInfoBtn');
+    const closeBtn = document.getElementById('closeModal');
+    if (!modal || !openBtn || !closeBtn) return;
+
+    let lastFocused = null;
+
+    function open() {
+      lastFocused = document.activeElement;
+      modal.hidden = false;
+      document.body.classList.add('modal-open');
+      requestAnimationFrame(() => modal.classList.add('show'));
+      closeBtn.focus();
+    }
+
+    function close() {
+      modal.classList.remove('show');
+      modal.hidden = true;
+      document.body.classList.remove('modal-open');
+      if (lastFocused) lastFocused.focus();
+    }
+
+    openBtn.addEventListener('click', open);
+    closeBtn.addEventListener('click', close);
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) close();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !modal.hidden) close();
+    });
+  })();
+</script>
+{% endblock %}
