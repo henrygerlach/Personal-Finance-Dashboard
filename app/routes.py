@@ -1,6 +1,7 @@
 """
 API route handlers for the FastAPI application.
 """
+
 from typing import Annotated
 
 from beanie import PydanticObjectId
@@ -9,9 +10,11 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app.categorizer import Categorizer
+from app.classification.client import ClassificationError
+from app.classification.service import ClassificationService, apply
 from app.config import get_logger
 from app.constants import CATEGORY_HIERARCHY
-from app.models import CategoryRule, Transaction
+from app.models import SOURCE_PENDING, CategoryRule, Transaction
 from app.parser import Parser
 from app.services import (
     CategorizationService,
@@ -207,6 +210,91 @@ async def get_cashflow_data(
 async def get_account_balances() -> dict:
     """Get cached Comdirect balances loaded during app startup."""
     return ComdirectBalanceService.get_balances_snapshot()
+
+
+# ============================================================================
+# API Routes - Classification
+# ============================================================================
+
+
+@router.post("/api/classify")
+async def classify_transactions(
+    transaction_ids: list[str] | None = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 25,
+    persist: Annotated[bool, Query()] = False,
+    use_cache: Annotated[bool, Query()] = True,
+) -> dict:
+    """
+    Classify transactions through the Claude API.
+
+    Consults the merchant cache first and only sends unknown merchants on, so
+    a run over already-known transactions costs nothing.
+
+    Query Parameters:
+        transaction_ids: Specific transactions. Defaults to the ones still
+            awaiting classification.
+        limit: How many to take when no ids are given.
+        persist: Write the results back. Off by default, so a run can be
+            inspected before it changes anything.
+        use_cache: Set to false to send every transaction to the API.
+
+    Returns:
+        The classification of each transaction and a summary of the run.
+    """
+    if transaction_ids:
+        transactions = [
+            transaction
+            for transaction in [
+                await Transaction.get(PydanticObjectId(tid)) for tid in transaction_ids
+            ]
+            if transaction is not None
+        ]
+    else:
+        transactions = await (
+            Transaction.find(Transaction.classification_source == SOURCE_PENDING)
+            .sort("-date")
+            .limit(limit)
+            .to_list()
+        )
+
+    if not transactions:
+        return {"status": "empty", "classified": 0, "results": []}
+
+    try:
+        run = await ClassificationService().classify(transactions, use_cache=use_cache)
+    except ClassificationError as error:
+        raise HTTPException(status_code=503, detail=str(error))
+
+    written = await apply(run.classifications, transactions) if persist else 0
+
+    return {
+        "status": "success",
+        "classified": len(run.classifications),
+        "persisted": written,
+        "summary": {
+            "cache_hits": run.cache_hits,
+            "api_calls": run.api_calls,
+            "fallbacks": run.fallbacks,
+            "below_threshold": run.below_threshold,
+            "invalid_pairs": run.invalid_pairs,
+            "failed": run.failed,
+        },
+        "usage": run.usage,
+        "results": [
+            {
+                "transaction_id": c.transaction_id,
+                "merchant": c.merchant,
+                "major": c.major,
+                "minor": c.minor,
+                "flow_type": c.flow_type,
+                "confidence": round(c.confidence, 3),
+                "reason": c.reason,
+                "source": c.source,
+                "needs_review": c.needs_review,
+            }
+            for c in run.classifications
+        ],
+    }
 
 
 # ============================================================================
