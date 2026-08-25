@@ -1,0 +1,308 @@
+#!/usr/bin/env python3
+"""
+Migrate transactions from the legacy category hierarchy to the new taxonomy.
+
+The 2,600-odd hand-categorized transactions are the most valuable thing in the
+database, so this script is built to be undone. It writes the old category
+into ``legacy_major`` / ``legacy_minor`` before overwriting it, which makes the
+run both reversible and idempotent: a transaction that already carries a
+legacy category has been migrated and is left alone.
+
+What it does, in order:
+
+1. Translates each transaction's category through ``app.legacy_mapping``.
+   A pair the mapping does not cover is reported and skipped, never guessed.
+2. Derives ``flow_type`` from the new major category.
+3. Marks the four legacy buckets that have no honest target as ``pending``,
+   so the classifier can revisit them later.
+4. Fills the merchant cache from the migrated transactions, so the hand-made
+   categories answer lookups before the API is ever called.
+
+Usage:
+    python scripts/migrate_categories.py --dry-run    # report, write nothing
+    python scripts/migrate_categories.py              # migrate
+    python scripts/migrate_categories.py --rollback   # restore the old state
+
+Take a backup first; see backups/README.md.
+"""
+
+import argparse
+import asyncio
+import sys
+from collections import Counter, defaultdict
+from datetime import datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from app.categories import flow_type_for  # noqa: E402
+from app.database import db_manager  # noqa: E402
+from app.legacy_mapping import (  # noqa: E402
+    invalid_targets,
+    map_pair,
+    unmapped_legacy_pairs,
+)
+from app.models import (  # noqa: E402
+    SOURCE_LEGACY_RULES,
+    SOURCE_PENDING,
+    SOURCE_USER,
+    MerchantCategory,
+    Transaction,
+)
+from app.normalization import normalize_merchant  # noqa: E402
+
+# Defaults the legacy model used when nothing was assigned.
+LEGACY_DEFAULT = ("Other", "Uncategorized")
+
+
+def _legacy_pair_of(transaction: Transaction) -> tuple[str, str]:
+    """The transaction's current category, with the legacy defaults applied."""
+    major = (transaction.major_category or LEGACY_DEFAULT[0]).strip()
+    minor = (transaction.minor_category or LEGACY_DEFAULT[1]).strip()
+    return major, minor
+
+
+async def migrate(dry_run: bool) -> tuple[int, list]:
+    """
+    Translate every unmigrated transaction.
+
+    Returns:
+        The process exit code and the planned changes as
+        ``(transaction, new_pair, provisional)`` triples, so a dry run can
+        preview the merchant cache without having written anything.
+    """
+    transactions = await Transaction.find_all().to_list()
+
+    already = [t for t in transactions if t.legacy_major is not None]
+    pending = [t for t in transactions if t.legacy_major is None]
+
+    print(f"transactions        : {len(transactions)}")
+    print(f"already migrated    : {len(already)} (skipped)")
+    print(f"to migrate          : {len(pending)}")
+    print()
+
+    if not pending:
+        print("Nothing to do.")
+        return 0, []
+
+    changes: list[tuple[Transaction, tuple[str, str], bool]] = []
+    unmapped: Counter = Counter()
+
+    for transaction in pending:
+        legacy = _legacy_pair_of(transaction)
+        try:
+            new_pair, provisional = map_pair(*legacy)
+        except KeyError:
+            unmapped[legacy] += 1
+            continue
+        changes.append((transaction, new_pair, provisional))
+
+    # --- Report -------------------------------------------------------------
+    moves: Counter = Counter()
+    for transaction, new_pair, provisional in changes:
+        moves[(_legacy_pair_of(transaction), new_pair, provisional)] += 1
+
+    print(f"{'legacy':<34} {'new':<48} {'n':>5}  state")
+    print("-" * 100)
+    for (legacy, new_pair, provisional), count in sorted(
+        moves.items(), key=lambda item: -item[1]
+    ):
+        state = "pending" if provisional else "final"
+        print(
+            f"{legacy[0] + ' / ' + legacy[1]:<34} "
+            f"{new_pair[0] + ' / ' + new_pair[1]:<48} {count:>5}  {state}"
+        )
+    print()
+
+    flows = Counter(flow_type_for(new_pair[0]) for _, new_pair, _ in changes)
+    print(
+        "flow types          : "
+        + ", ".join(f"{k}={v}" for k, v in sorted(flows.items()))
+    )
+    provisional_count = sum(1 for _, _, p in changes if p)
+    print(f"marked pending      : {provisional_count}")
+    print()
+
+    if unmapped:
+        print("!! UNMAPPED LEGACY CATEGORIES — decide these, they were not touched:")
+        for (major, minor), count in unmapped.most_common():
+            print(f"   {major} / {minor}: {count} transactions")
+        print()
+
+    if dry_run:
+        print("Dry run — nothing written.")
+        return (1 if unmapped else 0), changes
+
+    # --- Write --------------------------------------------------------------
+    for transaction, new_pair, provisional in changes:
+        legacy_major, legacy_minor = _legacy_pair_of(transaction)
+        transaction.legacy_major = legacy_major
+        transaction.legacy_minor = legacy_minor
+        transaction.major_category, transaction.minor_category = new_pair
+        transaction.flow_type = flow_type_for(new_pair[0])
+        transaction.classification_source = (
+            SOURCE_PENDING if provisional else SOURCE_LEGACY_RULES
+        )
+        await transaction.save()
+
+    print(f"Migrated {len(changes)} transactions.")
+    return (1 if unmapped else 0), changes
+
+
+async def fill_merchant_cache(dry_run: bool, planned: list | None = None) -> None:
+    """
+    Seed the merchant cache from the migrated transactions.
+
+    Only finally-categorized transactions contribute — a provisional category
+    is not an answer and must not be cached as one. Entries are written as
+    ``user`` because they come from categories assigned by hand, which is
+    exactly the authority a user correction carries.
+
+    A merchant whose transactions disagree about the category is skipped: with
+    no way to tell which of them is right, the classifier should look at it.
+    """
+    if dry_run:
+        # Nothing was written, so the planned changes are the only source of
+        # the categories this would cache.
+        rows = [
+            (transaction, new_pair)
+            for transaction, new_pair, provisional in (planned or [])
+            if not provisional
+        ]
+    else:
+        # After a real run the database is authoritative, and it also covers
+        # transactions migrated by an earlier run.
+        rows = [
+            (transaction, (transaction.major_category, transaction.minor_category))
+            for transaction in await Transaction.find(
+                Transaction.classification_source == SOURCE_LEGACY_RULES
+            ).to_list()
+        ]
+
+    by_merchant: dict[str, Counter] = defaultdict(Counter)
+    for transaction, pair in rows:
+        merchant = normalize_merchant(transaction.booking_text, transaction.process)
+        if not merchant:
+            continue
+        by_merchant[merchant][pair] += 1
+
+    agreed = {m: c for m, c in by_merchant.items() if len(c) == 1}
+    conflicted = {m: c for m, c in by_merchant.items() if len(c) > 1}
+
+    print()
+    print(f"merchants seen      : {len(by_merchant)}")
+    print(f"unambiguous         : {len(agreed)}")
+    print(f"conflicting         : {len(conflicted)} (skipped, left to the classifier)")
+
+    if conflicted:
+        print()
+        print("  the five most frequent conflicts:")
+        ranked = sorted(conflicted.items(), key=lambda i: -sum(i[1].values()))
+        for merchant, counter in ranked[:5]:
+            spread = ", ".join(
+                f"{major}/{minor}×{n}" for (major, minor), n in counter.most_common()
+            )
+            print(f"    {merchant}: {spread}")
+
+    if dry_run:
+        print()
+        print(f"Dry run — would write {len(agreed)} merchant entries.")
+        return
+
+    existing = {m.merchant: m for m in await MerchantCategory.find_all().to_list()}
+    written = 0
+    for merchant, counter in agreed.items():
+        (major, minor), hits = counter.most_common(1)[0]
+        entry = existing.get(merchant)
+        if entry is None:
+            await MerchantCategory(
+                merchant=merchant,
+                major=major,
+                minor=minor,
+                source=SOURCE_USER,
+                hit_count=hits,
+                updated_at=datetime.utcnow(),
+            ).insert()
+        else:
+            entry.major, entry.minor = major, minor
+            entry.source = SOURCE_USER
+            entry.hit_count = hits
+            entry.updated_at = datetime.utcnow()
+            await entry.save()
+        written += 1
+
+    print()
+    print(f"Wrote {written} merchant cache entries.")
+
+
+async def rollback(dry_run: bool) -> int:
+    """Restore the legacy categories and drop everything the migration derived."""
+    transactions = await Transaction.find(
+        Transaction.legacy_major != None  # noqa: E711 — Beanie builds a query here
+    ).to_list()
+    merchants = await MerchantCategory.find_all().count()
+
+    print(f"migrated transactions: {len(transactions)}")
+    print(f"merchant cache entries: {merchants} (all will be removed)")
+
+    if dry_run:
+        print("\nDry run — nothing written.")
+        return 0
+
+    if not transactions and not merchants:
+        print("\nNothing to roll back.")
+        return 0
+
+    for transaction in transactions:
+        transaction.major_category = transaction.legacy_major
+        transaction.minor_category = transaction.legacy_minor
+        transaction.legacy_major = None
+        transaction.legacy_minor = None
+        transaction.flow_type = None
+        transaction.classification_source = None
+        transaction.confidence = None
+        transaction.reason = None
+        await transaction.save()
+
+    # The cache is derived entirely from the migration at this point, so it
+    # goes with it. Once corrections can be made in the UI this becomes
+    # destructive and needs revisiting.
+    await MerchantCategory.find_all().delete()
+
+    print(f"\nRestored {len(transactions)} transactions, cleared the merchant cache.")
+    return 0
+
+
+async def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[1])
+    parser.add_argument(
+        "--dry-run", action="store_true", help="report what would change, write nothing"
+    )
+    parser.add_argument(
+        "--rollback",
+        action="store_true",
+        help="restore legacy categories and clear the merchant cache",
+    )
+    args = parser.parse_args()
+
+    # A broken mapping table is a programming error, not a data problem.
+    assert not unmapped_legacy_pairs(), (
+        f"legacy pairs without a mapping: {sorted(unmapped_legacy_pairs())}"
+    )
+    assert not invalid_targets(), (
+        f"mapping targets outside the new hierarchy: {sorted(invalid_targets())}"
+    )
+
+    await db_manager.connect()
+    try:
+        if args.rollback:
+            return await rollback(args.dry_run)
+        code, planned = await migrate(args.dry_run)
+        await fill_merchant_cache(args.dry_run, planned)
+        return code
+    finally:
+        await db_manager.disconnect()
+
+
+if __name__ == "__main__":
+    raise SystemExit(asyncio.run(main()))
