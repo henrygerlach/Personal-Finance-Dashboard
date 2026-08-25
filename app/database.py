@@ -1,6 +1,7 @@
 """
 Database initialization and connection management.
 """
+
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -8,7 +9,12 @@ from beanie import init_beanie
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 
 from app.config import get_logger, settings
-from app.models import CategoryRule, ComdirectBalanceSnapshot, Transaction
+from app.models import (
+    CategoryRule,
+    ComdirectBalanceSnapshot,
+    MerchantCategory,
+    Transaction,
+)
 
 logger = get_logger(__name__)
 
@@ -29,7 +35,12 @@ class DatabaseManager:
         # Initialize Beanie with document models
         await init_beanie(
             database=self.database,
-            document_models=[Transaction, CategoryRule, ComdirectBalanceSnapshot],
+            document_models=[
+                Transaction,
+                CategoryRule,
+                MerchantCategory,
+                ComdirectBalanceSnapshot,
+            ],
         )
         logger.info("Database connection established and Beanie initialized")
 
