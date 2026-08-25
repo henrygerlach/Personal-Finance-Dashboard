@@ -49,7 +49,11 @@ from app.models import (  # noqa: E402
     MerchantCategory,
     Transaction,
 )
-from app.normalization import normalize_merchant  # noqa: E402
+from app.normalization import (  # noqa: E402
+    build_canonical_map,
+    merchant_key,
+    normalize_merchant,
+)
 
 # Defaults the legacy model used when nothing was assigned.
 LEGACY_DEFAULT = ("Other", "Uncategorized")
@@ -179,12 +183,25 @@ async def fill_merchant_cache(dry_run: bool, planned: list | None = None) -> Non
             ).to_list()
         ]
 
+    named = [
+        (normalize_merchant(transaction.booking_text, transaction.process), pair)
+        for transaction, pair in rows
+    ]
+    # Fold town and legal-form suffixes onto the shorter spelling first, so a
+    # shop that a card payment writes as "EDEKA BOECKER HAMBURG" and a direct
+    # debit as "EDEKA BOECKER" ends up as one entry rather than two that can
+    # drift into different categories.
+    canonical = build_canonical_map(name for name, _ in named if name)
+
     by_merchant: dict[str, Counter] = defaultdict(Counter)
-    for transaction, pair in rows:
-        merchant = normalize_merchant(transaction.booking_text, transaction.process)
-        if not merchant:
+    display: dict[str, str] = {}
+    for name, pair in named:
+        if not name:
             continue
-        by_merchant[merchant][pair] += 1
+        name = canonical[name]
+        key = merchant_key(name)
+        display.setdefault(key, name)
+        by_merchant[key][pair] += 1
 
     agreed = {m: c for m, c in by_merchant.items() if len(c) == 1}
     conflicted = {m: c for m, c in by_merchant.items() if len(c) > 1}
@@ -202,7 +219,7 @@ async def fill_merchant_cache(dry_run: bool, planned: list | None = None) -> Non
             spread = ", ".join(
                 f"{major}/{minor}×{n}" for (major, minor), n in counter.most_common()
             )
-            print(f"    {merchant}: {spread}")
+            print(f"    {display[merchant]}: {spread}")
 
     if dry_run:
         print()
@@ -217,6 +234,7 @@ async def fill_merchant_cache(dry_run: bool, planned: list | None = None) -> Non
         if entry is None:
             await MerchantCategory(
                 merchant=merchant,
+                display_name=display[merchant],
                 major=major,
                 minor=minor,
                 source=SOURCE_USER,
@@ -224,6 +242,7 @@ async def fill_merchant_cache(dry_run: bool, planned: list | None = None) -> Non
                 updated_at=datetime.utcnow(),
             ).insert()
         else:
+            entry.display_name = display[merchant]
             entry.major, entry.minor = major, minor
             entry.source = SOURCE_USER
             entry.hit_count = hits

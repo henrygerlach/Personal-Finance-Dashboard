@@ -9,9 +9,12 @@ the truncated PayPal lines.
 import pytest
 
 from app.normalization import (
+    build_canonical_map,
     is_paypal,
     is_unresolvable_paypal,
+    merchant_key,
     normalize_merchant,
+    shorten_merchant,
 )
 
 # --- Direct debits (Lastschrift) --------------------------------------------
@@ -232,3 +235,88 @@ def test_empty_input_yields_an_empty_key(value):
 def test_process_argument_is_accepted_and_ignored():
     assert normalize_merchant(" MEDIA MARKT ", "Kartenumsatz") == "MEDIA MARKT"
     assert normalize_merchant(" MEDIA MARKT ", None) == "MEDIA MARKT"
+
+
+# --- Cache keys --------------------------------------------------------------
+
+
+def test_merchant_key_removes_spaces():
+    assert merchant_key("EDEKA BOECKER") == "EDEKABOECKER"
+    assert merchant_key("") == ""
+
+
+def test_merchant_key_survives_a_wrap_in_the_middle_of_a_word():
+    """
+    Comdirect chops each field into 35-character pieces and rejoins them with
+    a space, which regularly lands mid-word. The same merchant then arrives
+    spelled two ways. Undoing the wrap is impossible in general — at the same
+    boundary the space is sometimes genuine — but a key without spaces cannot
+    be wrong about it.
+    """
+    assert merchant_key("LOGPAY F INANCIAL SERVICES GMBH") == merchant_key(
+        "LOGPAY FINANCIAL SE RVICES GMBH"
+    )
+    assert merchant_key("WWW.STEA MPOWERED.COM") == merchant_key("WWW.STEAMPOWERED.COM")
+
+
+def test_merchant_key_still_separates_different_merchants():
+    assert merchant_key("ASOS.COM") != merchant_key("WWW.STEAMPOWERED.COM")
+    assert merchant_key("EDEKA BOECKER") != merchant_key("EDEKA BOLDT")
+
+
+def test_shorten_merchant_drops_the_trailing_token():
+    assert shorten_merchant("EDEKA BOECKER HAMBURG") == "EDEKA BOECKER"
+    assert shorten_merchant("SHOP APOTHEKE B.V") == "SHOP APOTHEKE"
+
+
+def test_shorten_merchant_keeps_a_minimum_of_two_tokens():
+    """
+    A one- or two-token name must not be shortened further: a stem like
+    "EDEKA" would then absorb every unrelated shop starting with it.
+    """
+    assert shorten_merchant("MEDIA MARKT") is None
+    assert shorten_merchant("SPOTIFY") is None
+    assert shorten_merchant("") is None
+
+
+def test_canonical_map_folds_a_town_suffix_onto_the_shorter_name():
+    """
+    Card payments append the town, direct debits do not, so one shop produces
+    two names. The corpus decides what folds — no list of towns is involved,
+    which is what makes this work for statements from anywhere.
+    """
+    canonical = build_canonical_map(
+        ["EDEKA BOECKER", "EDEKA BOECKER HAMBURG", "MENSA HCU", "MENSA HCU HAMBURG"]
+    )
+    assert canonical["EDEKA BOECKER HAMBURG"] == "EDEKA BOECKER"
+    assert canonical["MENSA HCU HAMBURG"] == "MENSA HCU"
+
+
+def test_canonical_map_leaves_names_with_nothing_to_fold_onto():
+    """The shorter spelling must actually occur; a suffix alone proves nothing."""
+    canonical = build_canonical_map(["EDEKA BOECKER HAMBURG", "MEDIA MARKT"])
+    assert canonical["EDEKA BOECKER HAMBURG"] == "EDEKA BOECKER HAMBURG"
+    assert canonical["MEDIA MARKT"] == "MEDIA MARKT"
+
+
+def test_canonical_map_collapses_a_chain_in_one_pass():
+    canonical = build_canonical_map(
+        ["REWE PHILIPP MENZ", "REWE PHILIPP MENZ OHG", "REWE PHILIPP MENZ OHG HAMBURG"]
+    )
+    assert canonical["REWE PHILIPP MENZ OHG HAMBURG"] == "REWE PHILIPP MENZ"
+
+
+def test_canonical_map_does_not_fold_a_two_token_prefix_away():
+    """ "EDEKA" must not absorb "EDEKA BOECKER" and "EDEKA BOLDT"."""
+    canonical = build_canonical_map(["EDEKA", "EDEKA BOECKER", "EDEKA BOLDT"])
+    assert canonical["EDEKA BOECKER"] == "EDEKA BOECKER"
+    assert canonical["EDEKA BOLDT"] == "EDEKA BOLDT"
+
+
+def test_canonical_map_is_total_and_idempotent():
+    names = ["EDEKA BOECKER", "EDEKA BOECKER HAMBURG", "MEDIA MARKT", ""]
+    canonical = build_canonical_map(names)
+    assert set(canonical) == {n for n in names if n}
+    again = build_canonical_map(canonical.values())
+    for name, target in canonical.items():
+        assert again[target] == target

@@ -124,7 +124,16 @@ class MerchantCategory(Document):
     merchant: Indexed(str, unique=True) = Field(
         ...,
         description=(
-            "Normalized merchant key from app.normalization.normalize_merchant."
+            "Lookup key from app.normalization.merchant_key: the normalized "
+            "name with spaces removed, so a line wrap in the middle of a word "
+            "cannot split one merchant into two entries."
+        ),
+    )
+    display_name: str = Field(
+        ...,
+        description=(
+            "The readable normalized name behind the key, for the review UI "
+            "and the classification prompt."
         ),
     )
     major: str = Field(..., description="Major category for this merchant")
