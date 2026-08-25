@@ -20,6 +20,26 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = "INFO"
 
+    # Classification via the Claude API. The key is read here and never
+    # reaches a template or a response body; the frontend is server-rendered,
+    # so there is no client bundle it could leak into.
+    anthropic_api_key: str | None = None
+    classification_model: str = "claude-haiku-4-5"
+    #: Below this, a result goes to review instead of forcing a category.
+    classification_confidence_threshold: float = 0.7
+    #: Transactions per API request. Larger batches amortise the cached system
+    #: prompt over more work; too large and one failure costs more to retry.
+    classification_batch_size: int = 25
+    #: Attempts per batch before it is given up on. A failed batch must not
+    #: take the rest of the import down with it.
+    classification_max_attempts: int = 3
+    #: Where PayPal debits go when Comdirect truncated the merchant away.
+    #: There is no merchant in those lines for any classifier to read, so they
+    #: are filed deterministically rather than sent to the API. The category
+    #: is knowingly approximate; classification_source marks them as such.
+    paypal_fallback_major: str = "Shopping"
+    paypal_fallback_minor: str = "General Merchandise"
+
     # Comdirect API (optional)
     comdirect_startup_auth_enabled: bool = False
     comdirect_client_id: str | None = Field(
