@@ -3,8 +3,9 @@
 .env.*
 !.env.example
 
-# Database dumps taken before migrations
-backups/
+# Database dumps taken before migrations — the archives, not the instructions
+backups/*
+!backups/README.md
 
 # Python
 __pycache__/
