@@ -6,6 +6,8 @@ defects: the mis-decoded umlauts, the word "Einkauf" wrapped mid-word, and
 the truncated PayPal lines.
 """
 
+import re
+
 import pytest
 
 from app.normalization import (
@@ -16,6 +18,7 @@ from app.normalization import (
     normalize_merchant,
     shorten_merchant,
 )
+from tests.fixtures.booking_texts import CASES, SAME_MERCHANT_PAIRS
 
 # --- Direct debits (Lastschrift) --------------------------------------------
 
@@ -320,3 +323,57 @@ def test_canonical_map_is_total_and_idempotent():
     again = build_canonical_map(canonical.values())
     for name, target in canonical.items():
         assert again[target] == target
+
+
+# --- Against the real statement corpus ---------------------------------------
+
+
+@pytest.mark.parametrize(
+    "booking_text,process,expected,covers",
+    [pytest.param(*case, id=case[3][:48]) for case in CASES],
+)
+def test_real_booking_lines(booking_text, process, expected, covers):
+    """
+    Every case is a line taken from the live statements, anonymised only where
+    a private individual or an IBAN appears.
+    """
+    assert normalize_merchant(booking_text, process) == expected
+
+
+@pytest.mark.parametrize(
+    "first,second,why",
+    [pytest.param(*pair, id=pair[2][:48]) for pair in SAME_MERCHANT_PAIRS],
+)
+def test_spellings_of_one_merchant_share_a_cache_key(first, second, why):
+    """
+    These pairs are the whole point of the cache key: if they do not collide,
+    the same shop gets two entries, two API calls, and — worse — can end up
+    in two different categories.
+    """
+    left = normalize_merchant(first)
+    right = normalize_merchant(second)
+    canonical = build_canonical_map([left, right])
+    assert merchant_key(canonical[left]) == merchant_key(canonical[right])
+
+
+def test_the_fixture_covers_every_payment_channel():
+    """
+    A regression guard on the fixture itself: it is only worth having if it
+    still spans the formats the statements actually contain.
+    """
+    processes = {case[1] for case in CASES if case[1]}
+    assert {
+        "Lastschrift / Belastung",
+        "Visa-Umsatz",
+        "Kartenumsatz",
+        "Übertrag / Überweisung",
+        "Wertpapiere",
+        "Barauszahlung",
+    } <= processes
+
+
+def test_the_fixture_contains_no_unanonymised_iban():
+    """IBANs in the fixture must be placeholders, not real accounts."""
+    for booking_text, *_ in CASES:
+        for match in re.findall(r"\bDE\d{2}[0-9A-Z]{16,}", booking_text):
+            assert set(match[4:]) <= {"0"}, f"real-looking IBAN in fixture: {match}"
