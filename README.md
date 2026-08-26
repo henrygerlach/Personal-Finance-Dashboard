@@ -56,21 +56,43 @@ graph LR
     DB --> Serv
 ```
 
-## 🚀 Quick Start (Production-Ready Setup)
-This project uses mise for seamless toolchain management. Get the dashboard up and running in three steps:
+## 🚀 Quick Start
+This project uses mise for toolchain management, environment and tasks.
 
 ```Bash
-# 1. Setup Environment & Tools
+# 1. Toolchain and dependencies
+mise trust          # mise refuses to read an untrusted config
 mise install
 mise run install
 
-# 2. Spin up the Database
-mise run mongo
+# 2. The API key for classification
+echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
 
-# 3. Launch the Application
+# 3. Launch — the database starts with it
 mise run dev
-Visit: http://127.0.0.1:8000
 ```
+
+Visit http://127.0.0.1:8000.
+
+`.mise.toml` sets `MONGODB_URL` and `DATABASE_NAME`. Without it the app falls
+back to port 27017 while the container publishes 27018, and dies on the first
+query — so start through mise, or export those two yourself.
+
+The API key stays out of `.mise.toml` on purpose: that file is in version
+control, `.env` is not.
+
+### Tasks
+
+| | |
+|---|---|
+| `mise run dev` | the dashboard, with auto-reload |
+| `mise run mongo` | just the database |
+| `mise run test` / `lint` / `format` | the usual |
+| `mise run backup` | dump the working database before anything that rewrites it |
+| `mise run merchants` | how well normalization collapses transactions onto merchants |
+| `mise run migrate` | migrate categories to the new taxonomy (`-- --dry-run` to preview) |
+| `mise run backfill` | classify transactions still holding a provisional category |
+| `mise run eval` | score the classifier against the hand-made categories |
 
 ## 🍏 Start & Stop from Spotlight (macOS)
 Install two small app bundles once:
