@@ -119,9 +119,15 @@ class MerchantCategory(Document):
     seen before reach the API. Entries written by hand outrank the classifier:
     once a category is corrected in the UI it becomes the answer for that
     merchant, and the model never overrides it.
+
+    ``major`` and ``minor`` are the stored truth. ``category_code`` is kept
+    alongside them for reading and for comparing against a model response, but
+    it is derived from the hierarchy's order — reordering the hierarchy
+    renumbers every code, so a stored code must never be resolved back into a
+    category on its own.
     """
 
-    merchant: Indexed(str, unique=True) = Field(
+    merchant_key: Indexed(str, unique=True) = Field(
         ...,
         description=(
             "Lookup key from app.normalization.merchant_key: the normalized "
@@ -138,6 +144,13 @@ class MerchantCategory(Document):
     )
     major: str = Field(..., description="Major category for this merchant")
     minor: str = Field(..., description="Minor category for this merchant")
+    category_code: Optional[str] = Field(
+        None,
+        description=(
+            "The hierarchy code for major/minor at the time of writing. "
+            "Derived, not authoritative."
+        ),
+    )
     source: str = Field(
         ...,
         description=(
@@ -145,10 +158,31 @@ class MerchantCategory(Document):
             "overwritten by the classifier."
         ),
     )
+    confidence: Optional[float] = Field(
+        None,
+        description=(
+            "Confidence of the classification that produced this entry. "
+            "None for entries carried over from the hand-made categories."
+        ),
+    )
+    reason: Optional[str] = Field(
+        None, description="The classifier's one-sentence justification, if it gave one."
+    )
     hit_count: int = Field(0, description="How often this entry has answered a lookup")
-    updated_at: datetime = Field(
+    first_seen: datetime = Field(
         default_factory=datetime.utcnow,
-        description="When the category was last written",
+        description="When this merchant was first written",
+    )
+    last_used: datetime = Field(
+        default_factory=datetime.utcnow,
+        description="When this entry last answered a lookup or was rewritten",
+    )
+    model_version: Optional[str] = Field(
+        None,
+        description=(
+            "The model that produced this category, so entries from an older "
+            "prompt or model can be found and re-run later."
+        ),
     )
 
     class Settings:

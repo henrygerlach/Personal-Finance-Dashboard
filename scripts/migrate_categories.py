@@ -35,7 +35,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.categories import flow_type_for  # noqa: E402
+from app.categories import code_for, flow_type_for  # noqa: E402
 from app.database import db_manager  # noqa: E402
 from app.legacy_mapping import (  # noqa: E402
     invalid_targets,
@@ -226,27 +226,36 @@ async def fill_merchant_cache(dry_run: bool, planned: list | None = None) -> Non
         print(f"Dry run — would write {len(agreed)} merchant entries.")
         return
 
-    existing = {m.merchant: m for m in await MerchantCategory.find_all().to_list()}
+    existing = {
+        entry.merchant_key: entry
+        for entry in await MerchantCategory.find_all().to_list()
+    }
     written = 0
     for merchant, counter in agreed.items():
         (major, minor), hits = counter.most_common(1)[0]
         entry = existing.get(merchant)
+        now = datetime.utcnow()
         if entry is None:
             await MerchantCategory(
-                merchant=merchant,
+                merchant_key=merchant,
                 display_name=display[merchant],
                 major=major,
                 minor=minor,
+                category_code=code_for(major, minor),
                 source=SOURCE_USER,
                 hit_count=hits,
-                updated_at=datetime.utcnow(),
+                first_seen=now,
+                last_used=now,
+                # These categories were assigned by hand, not by a model.
+                model_version=None,
             ).insert()
         else:
             entry.display_name = display[merchant]
             entry.major, entry.minor = major, minor
+            entry.category_code = code_for(major, minor)
             entry.source = SOURCE_USER
             entry.hit_count = hits
-            entry.updated_at = datetime.utcnow()
+            entry.last_used = now
             await entry.save()
         written += 1
 
