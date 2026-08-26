@@ -30,6 +30,8 @@ from app.classification.prompt import (
 from app.classification.service import (
     ClassificationService,
     apply_refund_rule,
+    is_misfiled_refund,
+    refund_target,
     report_lines,
 )
 from app.models import SOURCE_FALLBACK, SOURCE_LLM, SOURCE_USER
@@ -647,3 +649,64 @@ def test_the_report_survives_a_run_that_made_no_api_calls():
     report = "\n".join(report_lines(result, 1))
     assert "merchants asked      : 0" in report
     assert "PayPal fallback    : 1" in report
+
+
+# --- Category against direction ----------------------------------------------
+
+
+def test_a_credit_under_an_expense_category_is_a_refund():
+    assert refund_target("Shopping", "Clothing & Shoes", 133.65) == (
+        "Income",
+        "Refunds & Reimbursements",
+    )
+    assert refund_target("Travel", "Accommodation", 55.36) == (
+        "Income",
+        "Refunds & Reimbursements",
+    )
+
+
+def test_a_debit_under_an_expense_category_is_left_alone():
+    assert refund_target("Shopping", "Clothing & Shoes", -133.65) is None
+
+
+@pytest.mark.parametrize(
+    "major,minor",
+    [
+        ("Income", "Salary & Wages"),
+        ("Income", "Refunds & Reimbursements"),
+        ("Transfers & Savings", "Internal Transfer"),
+        ("Transfers & Savings", "Cash Deposit"),
+    ],
+)
+def test_income_and_transfers_are_never_re_filed_as_refunds(major, minor):
+    """A salary and a deposit are positive by nature and mean nothing of the sort."""
+    assert refund_target(major, minor, 1500.0) is None
+
+
+def test_a_debit_filed_as_a_refund_is_reported_as_unrepairable():
+    """
+    The mirror case. It cannot be fixed by a rule — the category it should
+    have had is not recoverable — so it has to be found and re-classified
+    rather than silently rewritten. Seven of these were in the live data,
+    left behind by a cache entry that had already been removed.
+    """
+    assert is_misfiled_refund("Income", "Refunds & Reimbursements", -4.49)
+    assert not is_misfiled_refund("Income", "Refunds & Reimbursements", 4.49)
+    assert not is_misfiled_refund("Shopping", "Clothing & Shoes", -4.49)
+
+
+def test_the_rule_holds_for_every_category_in_the_hierarchy():
+    """
+    An exhaustive check rather than a sample: a credit must never stay under
+    an expense category, and nothing else may be touched.
+    """
+    from app.categories import flow_type_for, iter_pairs
+
+    for major, minor in iter_pairs():
+        credit = refund_target(major, minor, 10.0)
+        debit = refund_target(major, minor, -10.0)
+        assert debit is None
+        if flow_type_for(major) == "expense":
+            assert credit == ("Income", "Refunds & Reimbursements")
+        else:
+            assert credit is None

@@ -566,27 +566,48 @@ class ClassificationService:
         )
 
 
-def apply_refund_rule(classification: Classification, amount: float) -> Classification:
+def refund_target(major: str, minor: str, amount: float) -> tuple[str, str] | None:
     """
-    Re-file a credit that was categorised as spending.
+    Where a transaction belongs when its category disagrees with its direction.
 
-    The merchant cache answers per merchant, and one merchant can produce both
-    directions: a purchase at Amazon and the refund for it carry the same
-    merchant key but opposite meanings. Twelve merchants in the live data do
-    this, across 143 transactions.
+    A category answers "what was this for", and it is remembered per merchant.
+    The direction is a property of the single transaction, and one merchant
+    produces both: a purchase at Amazon and the refund for it carry the same
+    merchant key and opposite meanings. Rather than key the cache on the amount
+    as well — doubling the entries and halving the hit rate for a five percent
+    case — the disagreement is resolved here.
 
-    Rather than key the cache on the amount as well — which would double the
-    entries and halve the hit rate for a five percent case — an incoming
-    payment filed under an expense category is moved to refunds. Income and
-    transfers are left alone: a salary or a transfer between own accounts is
+    Returns the refund pair for an incoming amount filed as spending, and
+    ``None`` when the category and the direction already agree. Income and
+    transfers are never touched: a salary or a transfer between own accounts is
     positive by nature and means nothing of the sort.
+
+    The reverse — an outgoing amount filed as a refund — cannot be repaired by
+    a rule, because the category it should have had is not recoverable. Those
+    are reported so they can be classified again.
     """
-    if amount <= 0 or classification.flow_type != "expense":
-        return classification
+    if amount <= 0:
+        return None
+    if (major, minor) == REFUND_PAIR or flow_type_for(major) != "expense":
+        return None
+    return REFUND_PAIR
+
+
+def is_misfiled_refund(major: str, minor: str, amount: float) -> bool:
+    """An outgoing amount sitting under refunds, which no rule can repair."""
+    return amount < 0 and (major, minor) == REFUND_PAIR
+
+
+def apply_refund_rule(classification: Classification, amount: float) -> Classification:
+    """Re-file a credit that was categorised as spending. See refund_target."""
     if classification.needs_review:
         return classification
 
-    major, minor = REFUND_PAIR
+    target = refund_target(classification.major, classification.minor, amount)
+    if target is None:
+        return classification
+
+    major, minor = target
     return Classification(
         transaction_id=classification.transaction_id,
         major=major,

@@ -92,6 +92,7 @@ control, `.env` is not.
 | `mise run merchants` | how well normalization collapses transactions onto merchants |
 | `mise run migrate` | migrate categories to the new taxonomy (`-- --dry-run` to preview) |
 | `mise run backfill` | classify transactions still holding a provisional category |
+| `mise run repair-refunds` | re-file transactions whose category disagrees with their direction |
 | `mise run eval` | score the classifier against the hand-made categories |
 
 ## 🍏 Start & Stop from Spotlight (macOS)

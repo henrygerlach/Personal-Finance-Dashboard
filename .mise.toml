@@ -71,6 +71,10 @@ run = "poetry run python scripts/migrate_categories.py"
 description = "Classify transactions still holding a provisional category"
 run = "poetry run python scripts/backfill_classification.py"
 
+[tasks.repair-refunds]
+description = "Re-file transactions whose category disagrees with their direction"
+run = "poetry run python scripts/repair_refunds.py"
+
 [tasks.eval]
 description = "Score the classifier against the hand-made categories"
 run = "poetry run python scripts/eval_classification.py"
