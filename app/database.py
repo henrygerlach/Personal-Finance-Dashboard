@@ -13,6 +13,7 @@ from app.models import (
     CategoryRule,
     ComdirectBalanceSnapshot,
     MerchantCategory,
+    PayPalRecord,
     Transaction,
 )
 
@@ -40,6 +41,7 @@ class DatabaseManager:
                 CategoryRule,
                 MerchantCategory,
                 ComdirectBalanceSnapshot,
+                PayPalRecord,
             ],
         )
         logger.info("Database connection established and Beanie initialized")

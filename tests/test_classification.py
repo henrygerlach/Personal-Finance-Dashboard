@@ -9,6 +9,7 @@ The classifier is a stub throughout — the point is the gatekeeping.
 
 import asyncio
 from dataclasses import replace
+from datetime import date, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -35,6 +36,7 @@ from app.classification.service import (
     report_lines,
 )
 from app.models import SOURCE_FALLBACK, SOURCE_LLM, SOURCE_USER
+from app.paypal import PayPalLedger, PayPalRow
 
 
 class StubClassifier:
@@ -67,12 +69,15 @@ class StubClassifier:
         return results, failures
 
 
-def make_transaction(tid, booking_text, amount=-10.0, process=None):
+def make_transaction(
+    tid, booking_text, amount=-10.0, process=None, on=date(2024, 3, 6)
+):
     return SimpleNamespace(
         id=tid,
         booking_text=booking_text,
         amount=amount,
         process=process,
+        date=datetime(on.year, on.month, on.day),
         major_category=None,
         minor_category=None,
         flow_type=None,
@@ -94,6 +99,16 @@ def no_database(monkeypatch):
 
     monkeypatch.setattr(service_module, "lookup_merchant", no_lookup)
     monkeypatch.setattr(service_module, "remember_merchant", no_remember)
+
+    # A service that was not given a ledger would otherwise go looking for one
+    # in a database that is not there. Tests that want PayPal recovery inject
+    # a ledger of their own, which suppresses this.
+    async def no_ledger(self):
+        return self._paypal_ledger
+
+    monkeypatch.setattr(
+        service_module.ClassificationService, "_get_paypal_ledger", no_ledger
+    )
 
 
 def run(coro):
@@ -190,6 +205,137 @@ def test_the_paypal_fallback_is_not_sent_to_review_by_the_threshold():
     assert classification.confidence == 0.0
     assert not classification.needs_review
     assert (classification.major, classification.minor) != NEEDS_REVIEW
+
+
+TRUNCATED_PAYPAL = (
+    "Auftraggeber: PayPal (Europe) S.a r.l. et Cie, S.C.A. Buchungstext: "
+    "1024177396132 PP.5189.PP . , Ihr Ei nkauf bei Ref. J82223"
+)
+
+
+def paypal_ledger_naming(payee, amount=-10.0, on=date(2024, 3, 4)):
+    """A ledger holding one purchase and the bank settlement that funded it."""
+    return PayPalLedger(
+        [
+            PayPalRow(
+                code="PAY1",
+                date=on,
+                kind="PayPal Express-Zahlung",
+                status="Abgeschlossen",
+                name=payee,
+                currency="EUR",
+                gross=amount,
+                related_code="",
+                item_title="",
+            ),
+            PayPalRow(
+                code="FUND1",
+                date=on,
+                kind="Bankgutschrift auf PayPal-Konto",
+                status="Ausstehend",
+                name="",
+                currency="EUR",
+                gross=abs(amount),
+                related_code="PAY1",
+                item_title="",
+            ),
+        ]
+    )
+
+
+def test_a_recovered_paypal_payee_is_classified_as_an_ordinary_merchant():
+    """
+    The whole point of the recovery: once the payee is back, the line is not
+    special any more and goes through the same funnel as everything else.
+    """
+    stub = StubClassifier(
+        results=[ClassificationResult(id="x", code="7.1", confidence=0.9)]
+    )
+    service = ClassificationService(
+        classifier=stub, paypal_ledger=paypal_ledger_naming("Spotify AB")
+    )
+    result = run(service.classify([make_transaction("1", TRUNCATED_PAYPAL)]))
+
+    assert result.paypal_recovered == 1
+    assert result.fallbacks == 0
+    assert [request.text for request in stub.seen] == ["SPOTIFY AB"]
+    assert result.classifications[0].source == SOURCE_LLM
+
+
+def test_a_recovered_payee_is_recorded_on_the_classification():
+    stub = StubClassifier(
+        results=[ClassificationResult(id="x", code="7.1", confidence=0.9)]
+    )
+    service = ClassificationService(
+        classifier=stub, paypal_ledger=paypal_ledger_naming("Spotify AB")
+    )
+    result = run(service.classify([make_transaction("1", TRUNCATED_PAYPAL)]))
+    classification = result.classifications[0]
+
+    assert classification.paypal_counterparty == "Spotify AB"
+    assert classification.paypal_settlement_code == "FUND1"
+
+
+def test_the_fallback_still_applies_when_the_ledger_cannot_name_the_payee():
+    """No export, or no unambiguous match, and the old behaviour is intact."""
+    stub = StubClassifier()
+    service = ClassificationService(
+        classifier=stub,
+        # The right payee, but for an amount this transaction does not have.
+        paypal_ledger=paypal_ledger_naming("Spotify AB", amount=-99.0),
+    )
+    result = run(service.classify([make_transaction("1", TRUNCATED_PAYPAL)]))
+
+    assert stub.seen == []
+    assert result.paypal_recovered == 0
+    assert result.fallbacks == 1
+    assert result.classifications[0].source == SOURCE_FALLBACK
+
+
+def test_a_recovered_payee_merges_with_the_same_merchant_named_in_the_clear():
+    """
+    One request, not two: the recovered name is folded in before merchants are
+    grouped, so a truncated Spotify line and a legible one are one merchant.
+    """
+    stub = StubClassifier(
+        results=[ClassificationResult(id="x", code="7.1", confidence=0.9)]
+    )
+    service = ClassificationService(
+        classifier=stub, paypal_ledger=paypal_ledger_naming("Spotify AB")
+    )
+    result = run(
+        service.classify(
+            [
+                make_transaction("1", TRUNCATED_PAYPAL),
+                make_transaction("2", "Auftraggeber: Spotify AB"),
+            ]
+        )
+    )
+
+    assert len(stub.seen) == 1
+    assert result.deduplicated == 1
+    assert len(result.classifications) == 2
+
+
+def test_a_paypal_line_that_names_its_merchant_is_left_alone():
+    """
+    The export is consulted only where the bank has nothing to say. A legible
+    PayPal line is already an ordinary merchant line.
+    """
+    stub = StubClassifier(
+        results=[ClassificationResult(id="x", code="7.1", confidence=0.9)]
+    )
+    service = ClassificationService(
+        classifier=stub, paypal_ledger=paypal_ledger_naming("Somebody Else")
+    )
+    legible = (
+        "Auftraggeber: PayPal (Europe) S.a r.l. et Cie, S.C.A. Buchungstext: "
+        "PP.5189.PP . SPOTIFY, Ihr Einkauf bei SPOTIFY"
+    )
+    result = run(service.classify([make_transaction("1", legible)]))
+
+    assert result.paypal_recovered == 0
+    assert [request.text for request in stub.seen] == ["SPOTIFY"]
 
 
 def test_a_known_merchant_is_answered_from_the_cache(monkeypatch):
