@@ -48,26 +48,38 @@
 
   // --- Category palette -----------------------------------------------------
 
-  // One hue per major category. Lightness and chroma are held close together
-  // so a stacked bar reads as an even field rather than a set of flares.
+  // One hue per major category, spread around the wheel so no two majors
+  // read as the same colour in a stacked bar. Lightness and chroma are held
+  // close together so the stack reads as an even field rather than a set of
+  // flares, and each major's minors are lightness steps within its hue.
   const MAJOR_TONES = {
-    Finances: { L: 0.72, C: 0.115, H: 178 },
-    Living: { L: 0.66, C: 0.12, H: 268 },
-    "Food & Drinks": { L: 0.77, C: 0.13, H: 72 },
-    Lifestyle: { L: 0.7, C: 0.12, H: 350 },
-    Health: { L: 0.68, C: 0.13, H: 30 },
+    // Income is the only major that is money coming in, so it gets the one
+    // green in the palette and nothing else comes near that hue.
+    Income: { L: 0.74, C: 0.13, H: 148 },
+    Housing: { L: 0.66, C: 0.12, H: 268 },
+    "Food & Drink": { L: 0.77, C: 0.13, H: 72 },
     Transportation: { L: 0.71, C: 0.11, H: 222 },
-    Travel: { L: 0.68, C: 0.115, H: 306 },
-    // Transfers move money without spending it, so they stay near-neutral.
-    Transfers: { L: 0.62, C: 0.03, H: 250 },
-    Other: { L: 0.66, C: 0.07, H: 112 },
+    "Health & Personal Care": { L: 0.68, C: 0.13, H: 36 },
+    Shopping: { L: 0.7, C: 0.12, H: 350 },
+    "Leisure & Entertainment": { L: 0.72, C: 0.12, H: 322 },
+    Travel: { L: 0.68, C: 0.115, H: 296 },
+    "Family & Education": { L: 0.7, C: 0.11, H: 200 },
+    Pets: { L: 0.73, C: 0.1, H: 96 },
+    Financial: { L: 0.72, C: 0.115, H: 170 },
+    "Gifts & Donations": { L: 0.75, C: 0.12, H: 6 },
+    // Transfers move money without spending it, so they stay near-neutral —
+    // and they are excluded from the expense charts entirely.
+    "Transfers & Savings": { L: 0.62, C: 0.03, H: 250 },
+    // Nothing has been decided about these yet, so they must not compete for
+    // attention with a category that has.
+    Uncategorized: { L: 0.5, C: 0.008, H: 250 },
   };
 
   // Buckets that mean "not classified" are deliberately colourless: they should
   // read as absence, not as another category competing for attention.
   const NEUTRAL_CATEGORIES = {
+    "Needs Review": { L: 0.5, C: 0.008, H: 250 },
     Uncategorized: { L: 0.5, C: 0.008, H: 250 },
-    Miscellaneous: { L: 0.58, C: 0.02, H: 90 },
   };
 
   const MINOR_STEP = 0.058;

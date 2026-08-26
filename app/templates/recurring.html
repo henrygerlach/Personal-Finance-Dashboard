@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero">
+  <div class="hero-text">
+    <span class="eyebrow">Detected from the history</span>
+    <h1>Recurring payments</h1>
+    <p class="subtitle">
+      Same merchant, similar amount, regular interval, at least three times.
+      Nothing here is a category — whether a payment repeats is a property of
+      the history, so it is measured rather than assigned.
+    </p>
+  </div>
+  <div class="hero-stat">
+    <span class="hero-stat-value">{{ overview.count }}</span>
+    <span class="label">schedules found</span>
+  </div>
+</section>
+
+<div class="chart-container stagger">
+  <section class="section-block">
+    <div class="balance-strip">
+      <div class="balance-card">
+        <h4>Recurring out, per month</h4>
+        <p class="balance-amount" data-money="{{ overview.monthly_expense }}">
+          {{ "%.2f"|format(overview.monthly_expense) }} €
+        </p>
+      </div>
+      <div class="balance-card">
+        <h4>Recurring in, per month</h4>
+        <p class="balance-amount" data-money="{{ overview.monthly_income }}">
+          {{ "%.2f"|format(overview.monthly_income) }} €
+        </p>
+      </div>
+      <div class="balance-card">
+        <h4>Net, per month</h4>
+        <p class="balance-amount"
+           data-money="{{ overview.monthly_income + overview.monthly_expense }}">
+          {{ "%.2f"|format(overview.monthly_income + overview.monthly_expense) }} €
+        </p>
+      </div>
+      {% if overview.transfer_count %}
+      <div class="balance-card">
+        <h4>Recurring transfers</h4>
+        <p class="balance-amount" data-money="{{ overview.monthly_transfer }}">
+          {{ "%.2f"|format(overview.monthly_transfer) }} €
+        </p>
+      </div>
+      {% endif %}
+    </div>
+    <p class="field-note">
+      Quarterly and yearly charges are shown at their monthly equivalent, so
+      an annual insurance premium can be compared with a streaming
+      subscription. Transfers — savings plans, money moved between your own
+      accounts — are listed below but counted separately: they are neither
+      income nor spending.
+    </p>
+  </section>
+
+  {% if overview['items'] %}
+  <section class="section-block">
+    <div class="table-scroll">
+      <table class="recurring-table">
+        <thead>
+          <tr>
+            <th>Merchant</th>
+            <th>Category</th>
+            <th>Every</th>
+            <th class="numeric">Amount</th>
+            <th class="numeric">Per month</th>
+            <th class="numeric">Seen</th>
+            <th>Last</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in overview['items'] %}
+          <tr>
+            <td>{{ item.merchant }}</td>
+            <td>
+              <span class="cat-swatch" data-category="{{ item.minor }}"></span>
+              {{ item.major }} / {{ item.minor }}
+            </td>
+            <td>{{ item.period }}</td>
+            <td class="numeric" data-money="{{ item.amount }}">
+              {{ "%.2f"|format(item.amount) }} €
+            </td>
+            <td class="numeric" data-money="{{ item.monthly_equivalent }}">
+              {{ "%.2f"|format(item.monthly_equivalent) }} €
+            </td>
+            <td class="numeric">{{ item.occurrences }}</td>
+            <td>{{ item.last_seen }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {% else %}
+  <div class="panel-outline is-centered">
+    <p class="panel-title">No schedules found</p>
+    <p class="panel-text">
+      A payment needs at least three charges of a similar size at a regular
+      interval before it counts as recurring.
+    </p>
+  </div>
+  {% endif %}
+</div>
+
+<script>
+  // Colour each row's swatch from the shared palette, so the table reads with
+  // the same key as every chart.
+  (function () {
+    if (!window.Theme) return;
+    document.querySelectorAll('.cat-swatch').forEach(function (swatch) {
+      swatch.style.background = window.Theme.categoryColor(
+        swatch.dataset.category
+      );
+    });
+  })();
+</script>
+{% endblock %}
