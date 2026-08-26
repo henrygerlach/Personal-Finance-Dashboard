@@ -44,10 +44,10 @@ class ClassificationResult:
     """What the model returned for one transaction, before validation."""
 
     id: str
-    major: str
-    minor: str
+    code: str
     confidence: float
-    reason: str
+    #: Only asked for below the threshold, so it is empty for most results.
+    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -76,6 +76,7 @@ class ClaudeClassifier:
         model: str | None = None,
         batch_size: int | None = None,
         max_attempts: int | None = None,
+        threshold: float | None = None,
     ) -> None:
         if client is None:
             if not settings.anthropic_api_key:
@@ -89,7 +90,12 @@ class ClaudeClassifier:
         self.max_attempts = max_attempts or settings.classification_max_attempts
         # Built once: rebuilding per request would be wasteful, and a system
         # block that differs between requests would never cache.
-        self._system_prompt = build_system_prompt()
+        self.threshold = (
+            threshold
+            if threshold is not None
+            else settings.classification_confidence_threshold
+        )
+        self._system_prompt = build_system_prompt(self.threshold)
         self._schema = build_response_schema()
         self.last_usage: dict | None = None
         # Checked once per classifier, not per batch, to keep the log quiet.
@@ -109,20 +115,25 @@ class ClaudeClassifier:
 
     @staticmethod
     def _user_message(batch: Sequence[ClassificationRequest]) -> str:
-        """The varying part: the transactions themselves, after the breakpoint."""
+        """
+        The varying part: the merchants themselves, after the breakpoint.
+
+        Ids are the position in this batch rather than the caller's own
+        identifiers. They are short, which keeps the answer small, and they
+        cannot leak a database id into the request.
+        """
         payload = [
             {
-                "id": request.id,
+                "id": index,
                 "text": request.text,
                 "amount": request.amount,
                 "process": request.process or "",
             }
-            for request in batch
+            for index, request in enumerate(batch, start=1)
         ]
         return (
             "Classify each of these transactions. Return one result per "
-            "transaction, keeping the ids exactly as given.\n\n"
-            + json.dumps(payload, ensure_ascii=False, indent=1)
+            "line, using the same ids.\n\n" + json.dumps(payload, ensure_ascii=False)
         )
 
     # --- Single batch -------------------------------------------------------
@@ -171,17 +182,26 @@ class ClaudeClassifier:
             (block.text for block in response.content if block.type == "text"), ""
         )
         payload = json.loads(text)
-        return [
-            ClassificationResult(
-                id=str(item["id"]),
-                major=item["major"],
-                minor=item["minor"],
-                # The schema cannot express a range, so it is clamped here.
-                confidence=min(1.0, max(0.0, float(item["confidence"]))),
-                reason=str(item.get("reason", "")),
+        by_position = {index: request for index, request in enumerate(batch, start=1)}
+
+        results = []
+        for item in payload["results"]:
+            request = by_position.get(int(item["id"]))
+            if request is None:
+                # An id nobody asked about. Dropping it is right: the caller
+                # detects the transaction it did ask about as missing.
+                logger.warning("Response carried unknown id %r", item["id"])
+                continue
+            results.append(
+                ClassificationResult(
+                    id=request.id,
+                    code=str(item["c"]).strip(),
+                    # The schema cannot express a range, so it is clamped here.
+                    confidence=min(1.0, max(0.0, float(item["p"]))),
+                    reason=str(item.get("r") or ""),
+                )
             )
-            for item in payload["results"]
-        ]
+        return results
 
     async def _classify_batch(
         self, batch: Sequence[ClassificationRequest]
@@ -249,14 +269,45 @@ class ClaudeClassifier:
             if failure is not None:
                 failures.append(failure)
 
-        returned = {result.id for result in results}
-        covered = returned | {i for failure in failures for i in failure.ids}
-        missing = [request.id for request in requests if request.id not in covered]
-        if missing:
-            # The model answered the batch but skipped transactions in it.
-            logger.warning("Classifier returned no result for %s ids", len(missing))
-            failures.append(BatchFailure(tuple(missing), "no result returned"))
+        # A batch can come back complete and still be missing lines: the
+        # model answers the ones it is sure about and quietly drops the rest.
+        # Those are asked about again on their own, where there is nothing
+        # else in the request to distract from them.
+        results, failures = await self._retry_missing(requests, results, failures)
+        return results, failures
 
+    async def _retry_missing(
+        self,
+        requests: Sequence[ClassificationRequest],
+        results: list[ClassificationResult],
+        failures: list[BatchFailure],
+    ) -> tuple[list[ClassificationResult], list[BatchFailure]]:
+        """Ask again, one at a time, about anything the model skipped."""
+        covered = {result.id for result in results}
+        covered |= {i for failure in failures for i in failure.ids}
+        missing = [request for request in requests if request.id not in covered]
+        if not missing:
+            return results, failures
+
+        logger.warning(
+            "Classifier skipped %s of %s transactions; asking individually",
+            len(missing),
+            len(requests),
+        )
+
+        still_missing: list[str] = []
+        for request in missing:
+            retry_results, failure = await self._classify_batch([request])
+            found = [result for result in retry_results if result.id == request.id]
+            if found:
+                results.extend(found)
+            else:
+                still_missing.append(request.id)
+
+        if still_missing:
+            failures.append(
+                BatchFailure(tuple(still_missing), "no result after individual retry")
+            )
         return results, failures
 
     async def count_prompt_tokens(self) -> int:

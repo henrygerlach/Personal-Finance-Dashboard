@@ -20,11 +20,21 @@ either check becomes ``Uncategorized / Needs Review`` instead of a category
 nobody chose.
 """
 
-from dataclasses import dataclass
+from collections import defaultdict
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Iterable, Sequence
 
-from app.categories import NEEDS_REVIEW, coerce_pair, flow_type_for, is_valid_pair
+from app.categories import (
+    MAJOR_INCOME,
+    NEEDS_REVIEW,
+    code_for,
+    coerce_pair,
+    flow_type_for,
+    is_valid_code,
+    is_valid_pair,
+    pair_for_code,
+)
 from app.classification.client import (
     ClassificationRequest,
     ClassificationResult,
@@ -39,6 +49,7 @@ from app.models import (
     Transaction,
 )
 from app.normalization import (
+    build_canonical_map,
     is_unresolvable_paypal,
     merchant_key,
     normalize_merchant,
@@ -46,6 +57,9 @@ from app.normalization import (
 )
 
 logger = get_logger(__name__)
+
+#: Where an incoming payment at an expense merchant is filed.
+REFUND_PAIR = (MAJOR_INCOME, "Refunds & Reimbursements")
 
 
 @dataclass
@@ -75,17 +89,21 @@ class ClassificationRun:
     fallbacks: int = 0
     api_calls: int = 0
     below_threshold: int = 0
-    invalid_pairs: int = 0
+    invalid_codes: int = 0
+    deduplicated: int = 0
+    refunds: int = 0
     failed: int = 0
     usage: dict | None = None
 
     def summary(self) -> str:
         return (
             f"{len(self.classifications)} transactions: "
-            f"{self.cache_hits} from cache, {self.api_calls} classified, "
+            f"{self.cache_hits} from cache, {self.api_calls} merchants asked, "
+            f"{self.deduplicated} deduplicated, "
             f"{self.fallbacks} fallback, {self.failed} failed; "
             f"{self.below_threshold} below threshold, "
-            f"{self.invalid_pairs} invalid pairs -> review"
+            f"{self.invalid_codes} invalid codes -> review; "
+            f"{self.refunds} re-filed as refunds"
         )
 
 
@@ -101,7 +119,7 @@ async def lookup_merchant(name: str) -> MerchantCategory | None:
         return None
 
     entry = await MerchantCategory.find_one(
-        MerchantCategory.merchant == merchant_key(name)
+        MerchantCategory.merchant_key == merchant_key(name)
     )
     if entry is not None:
         return entry
@@ -109,34 +127,51 @@ async def lookup_merchant(name: str) -> MerchantCategory | None:
     shorter = shorten_merchant(name)
     if shorter:
         return await MerchantCategory.find_one(
-            MerchantCategory.merchant == merchant_key(shorter)
+            MerchantCategory.merchant_key == merchant_key(shorter)
         )
     return None
 
 
-async def remember_merchant(name: str, major: str, minor: str, source: str) -> None:
+async def remember_merchant(
+    name: str,
+    major: str,
+    minor: str,
+    source: str,
+    confidence: float | None = None,
+    reason: str | None = None,
+    model_version: str | None = None,
+) -> None:
     """
     Write a merchant's category to the cache.
 
     A ``user`` entry is never overwritten by the classifier: once a category
     has been corrected by hand it is the answer for that merchant, and a later
     model run must not undo it.
+
+    ``model_version`` is recorded so entries written by an older model or
+    prompt can be found and re-run later without disturbing hand-made ones.
     """
     if not name or not is_valid_pair(major, minor):
         return
 
     key = merchant_key(name)
-    entry = await MerchantCategory.find_one(MerchantCategory.merchant == key)
+    entry = await MerchantCategory.find_one(MerchantCategory.merchant_key == key)
+    now = datetime.utcnow()
 
     if entry is None:
         await MerchantCategory(
-            merchant=key,
+            merchant_key=key,
             display_name=name,
             major=major,
             minor=minor,
+            category_code=code_for(major, minor),
             source=source,
+            confidence=confidence,
+            reason=reason,
             hit_count=0,
-            updated_at=datetime.utcnow(),
+            first_seen=now,
+            last_used=now,
+            model_version=model_version,
         ).insert()
         return
 
@@ -145,8 +180,12 @@ async def remember_merchant(name: str, major: str, minor: str, source: str) -> N
 
     entry.display_name = name
     entry.major, entry.minor = major, minor
+    entry.category_code = code_for(major, minor)
     entry.source = source
-    entry.updated_at = datetime.utcnow()
+    entry.confidence = confidence
+    entry.reason = reason
+    entry.model_version = model_version
+    entry.last_used = now
     await entry.save()
 
 
@@ -190,6 +229,12 @@ class ClassificationService:
         """
         Classify transactions, consulting the cache before the API.
 
+        The API is the last step, not the first. Each transaction is reduced
+        to a merchant, merchants that appear more than once in the batch are
+        collapsed onto one, and only merchants nobody has seen before are sent
+        on. A monthly import of 150 transactions turns into a handful of
+        merchants and one request.
+
         Args:
             transactions: The transactions to classify. Not saved here — the
                 caller decides whether a result is written.
@@ -198,50 +243,100 @@ class ClassificationService:
                 same data it is scoring would measure nothing.
         """
         run = ClassificationRun(classifications=[])
-        to_ask: list[ClassificationRequest] = []
-        merchants: dict[str, str] = {}
 
+        # Step 1: reduce every transaction to a merchant, then fold the
+        # spellings of one merchant together within this batch.
+        raw_names = {
+            str(t.id): normalize_merchant(t.booking_text, t.process)
+            for t in transactions
+        }
+        canonical = build_canonical_map(name for name in raw_names.values() if name)
+        merchants = {
+            transaction_id: canonical.get(name, name)
+            for transaction_id, name in raw_names.items()
+        }
+
+        # Step 2: group the transactions by merchant key. Everything decided
+        # for one key applies to every transaction carrying it.
+        by_key: dict[str, list[Transaction]] = defaultdict(list)
         for transaction in transactions:
             transaction_id = str(transaction.id)
-            name = normalize_merchant(transaction.booking_text, transaction.process)
-            merchants[transaction_id] = name
 
             if is_unresolvable_paypal(transaction.booking_text):
                 run.fallbacks += 1
                 run.classifications.append(self._paypal_fallback(transaction_id))
                 continue
 
+            name = merchants[transaction_id]
+            # A line with no merchant at all cannot be grouped with anything,
+            # so it keeps its own bucket and is asked about on its own.
+            #
+            # The direction is part of the group key. One answer is fanned out
+            # over the whole group, and a merchant can produce both directions
+            # — a purchase at Amazon and the refund for it. Grouping on the
+            # merchant alone let the first transaction's sign decide for the
+            # rest, which filed outgoing payments as refunds. Only the twelve
+            # merchants that actually run both ways cost a second request.
+            direction = "+" if transaction.amount > 0 else "-"
+            key = f"{merchant_key(name)}{direction}" if name else f"\0{transaction_id}"
+            by_key[key].append(transaction)
+
+        # Step 3: the cache answers what it knows, per merchant rather than
+        # per transaction.
+        to_ask: list[ClassificationRequest] = []
+        for key, group in by_key.items():
+            representative = group[0]
+            name = merchants[str(representative.id)]
+
             if use_cache:
                 entry = await lookup_merchant(name)
                 if entry is not None:
-                    run.cache_hits += 1
-                    entry.hit_count += 1
+                    entry.hit_count += len(group)
+                    entry.last_used = datetime.utcnow()
                     await entry.save()
-                    run.classifications.append(
-                        Classification(
-                            transaction_id=transaction_id,
-                            major=entry.major,
-                            minor=entry.minor,
-                            flow_type=flow_type_for(entry.major),
-                            confidence=1.0 if entry.source == SOURCE_USER else 0.9,
-                            reason=f"Known merchant ({entry.source}).",
-                            source=entry.source,
-                            merchant=name,
+                    for transaction in group:
+                        run.cache_hits += 1
+                        run.classifications.append(
+                            Classification(
+                                transaction_id=str(transaction.id),
+                                major=entry.major,
+                                minor=entry.minor,
+                                flow_type=flow_type_for(entry.major),
+                                confidence=1.0 if entry.source == SOURCE_USER else 0.9,
+                                reason=f"Known merchant ({entry.source}).",
+                                source=entry.source,
+                                merchant=name,
+                            )
                         )
-                    )
                     continue
 
+            # Step 4: one request per unknown merchant, not per transaction.
+            run.deduplicated += len(group) - 1
             to_ask.append(
                 ClassificationRequest(
-                    id=transaction_id,
-                    text=name or transaction.booking_text[:120],
-                    amount=transaction.amount,
-                    process=transaction.process,
+                    id=key,
+                    text=name or representative.booking_text[:120],
+                    amount=representative.amount,
+                    process=representative.process,
                 )
             )
 
         if to_ask:
-            await self._ask_api(to_ask, merchants, run)
+            await self._ask_api(to_ask, by_key, merchants, run)
+
+        # Applied once, at the end, so it covers cache hits, API answers and
+        # the PayPal fallback alike rather than being repeated per branch.
+        # This is also where the per-merchant answer is corrected for the one
+        # transaction that ran the other way.
+        amounts = {str(t.id): t.amount for t in transactions}
+        refiled = []
+        for classification in run.classifications:
+            amount = amounts.get(classification.transaction_id, 0.0)
+            adjusted = apply_refund_rule(classification, amount)
+            if adjusted is not classification:
+                run.refunds += 1
+            refiled.append(adjusted)
+        run.classifications = refiled
 
         logger.info("Classification run: %s", run.summary())
         return run
@@ -266,59 +361,81 @@ class ClassificationService:
     async def _ask_api(
         self,
         requests: list[ClassificationRequest],
+        by_key: dict[str, list[Transaction]],
         merchants: dict[str, str],
         run: ClassificationRun,
     ) -> None:
+        """Ask about each unknown merchant once, then fan the answer out."""
         classifier = self._get_classifier()
         results, failures = await classifier.classify(requests)
         run.usage = classifier.last_usage
 
+        def group_of(key: str) -> list[Transaction]:
+            return by_key.get(key, [])
+
         for result in results:
+            group = group_of(result.id)
+            if not group:
+                continue
+            merchant = merchants.get(str(group[0].id), "")
+            decided = await self._accept(result, merchant, run)
             run.api_calls += 1
-            run.classifications.append(
-                await self._accept(result, merchants.get(result.id, ""), run)
-            )
+            for transaction in group:
+                run.classifications.append(
+                    replace(decided, transaction_id=str(transaction.id))
+                )
 
         for failure in failures:
-            for transaction_id in failure.ids:
-                run.failed += 1
-                run.classifications.append(
-                    _review(
-                        transaction_id,
-                        f"Classification failed: {failure.error}",
-                        merchants.get(transaction_id, ""),
+            for key in failure.ids:
+                for transaction in group_of(key):
+                    run.failed += 1
+                    run.classifications.append(
+                        _review(
+                            str(transaction.id),
+                            f"Classification failed: {failure.error}",
+                            merchants.get(str(transaction.id), ""),
+                        )
                     )
-                )
 
     async def _accept(
         self, result: ClassificationResult, merchant: str, run: ClassificationRun
     ) -> Classification:
         """Validate one model result and decide whether to keep it."""
-        major, minor = coerce_pair(result.major, result.minor)
-        if (major, minor) == NEEDS_REVIEW and (
-            result.major,
-            result.minor,
-        ) != NEEDS_REVIEW:
-            run.invalid_pairs += 1
-            logger.warning("Discarded invalid pair %r / %r", result.major, result.minor)
+        if not is_valid_code(result.code):
+            run.invalid_codes += 1
+            logger.warning("Discarded unknown category code %r", result.code)
             return _review(
                 result.id,
-                f"Model returned {result.major} / {result.minor}, "
-                "which is not a category.",
+                f"Model returned code {result.code!r}, which is not a category.",
                 merchant,
             )
+
+        major, minor = pair_for_code(result.code)
 
         if result.confidence < self.threshold:
             run.below_threshold += 1
             return _review(
                 result.id,
                 f"Confidence {result.confidence:.2f} below "
-                f"{self.threshold:.2f}: {result.reason}",
+                f"{self.threshold:.2f}"
+                + (f": {result.reason}" if result.reason else "."),
                 merchant,
             )
 
-        # Only a confident, valid answer is worth remembering.
-        await remember_merchant(merchant, major, minor, SOURCE_LLM)
+        # Only a confident, valid answer is worth remembering — and a refund
+        # is not one: it describes which way this transaction ran, not what
+        # the merchant sells. Caching it would turn every later purchase at
+        # that shop into a refund.
+        if (major, minor) != REFUND_PAIR:
+            await remember_merchant(
+                merchant,
+                major,
+                minor,
+                SOURCE_LLM,
+                confidence=result.confidence,
+                reason=result.reason or None,
+                model_version=self._get_classifier().model,
+            )
 
         return Classification(
             transaction_id=result.id,
@@ -330,6 +447,42 @@ class ClassificationService:
             source=SOURCE_LLM,
             merchant=merchant,
         )
+
+
+def apply_refund_rule(classification: Classification, amount: float) -> Classification:
+    """
+    Re-file a credit that was categorised as spending.
+
+    The merchant cache answers per merchant, and one merchant can produce both
+    directions: a purchase at Amazon and the refund for it carry the same
+    merchant key but opposite meanings. Twelve merchants in the live data do
+    this, across 143 transactions.
+
+    Rather than key the cache on the amount as well — which would double the
+    entries and halve the hit rate for a five percent case — an incoming
+    payment filed under an expense category is moved to refunds. Income and
+    transfers are left alone: a salary or a transfer between own accounts is
+    positive by nature and means nothing of the sort.
+    """
+    if amount <= 0 or classification.flow_type != "expense":
+        return classification
+    if classification.needs_review:
+        return classification
+
+    major, minor = REFUND_PAIR
+    return Classification(
+        transaction_id=classification.transaction_id,
+        major=major,
+        minor=minor,
+        flow_type=flow_type_for(major),
+        confidence=classification.confidence,
+        reason=(
+            f"Incoming amount at a merchant otherwise filed under "
+            f"{classification.major} / {classification.minor}, so a refund."
+        ),
+        source=classification.source,
+        merchant=classification.merchant,
+    )
 
 
 async def apply(

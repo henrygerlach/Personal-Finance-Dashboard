@@ -13,16 +13,18 @@ the breakpoint. Adding a timestamp, a transaction count or a merchant name to
 the system block would silently defeat the whole arrangement.
 """
 
-from app.categories import CATEGORY_HIERARCHY, iter_pairs
+import json
+
+from app.categories import CATEGORY_HIERARCHY, all_codes, code_for
 
 INSTRUCTIONS = """\
 You classify German bank transactions into a fixed two-level category system.
 
-Each transaction gets exactly one major category and one minor category from \
-the hierarchy below. Copy both names verbatim. A pair that is not in the \
-hierarchy, or a minor taken from a different major, is discarded and the \
-transaction is sent for human review — so an accurate "I am unsure" is worth \
-more than a confident guess.
+Each transaction gets exactly one category code from the hierarchy below. A \
+code names a major/minor pair, so there is no way to combine a minor with the \
+wrong major. A code that is not in the list is discarded and the transaction \
+is sent for human review — an accurate "I am unsure" is worth more than a \
+confident guess.
 
 How to read the input:
 
@@ -37,10 +39,10 @@ Kartenumsatz, Übertrag, Wertpapiere and so on).
 Rules that override intuition:
 
 - Do not decide whether something is income, an expense or a transfer. That \
-follows from the major category and is derived afterwards.
+follows from the category and is derived afterwards.
 - Money moved between the owner's own accounts, securities purchases, cash \
-withdrawals and credit card settlements belong under Transfers & Savings, \
-even though money leaves the account.
+withdrawals and credit card settlements are transfers, even though money \
+leaves the account.
 - Maintenance, allowances or support *received* is income, not an expense. \
 The German word "Unterhalt" on an incoming payment means received support.
 - Bank charges, card fees and foreign-transaction surcharges are Financial, \
@@ -48,12 +50,18 @@ never the category of whatever was bought.
 - A person's name as the merchant usually means a private transfer, unless \
 the amount and rhythm clearly say otherwise.
 
-`confidence` is your probability that the pair is right, from 0 to 1. Use the \
-full range. Below the configured threshold the transaction goes to review \
-instead of being filed, which is the correct outcome when the text is \
-genuinely ambiguous.
+Answer with one object per input line:
 
-`reason` is one short sentence naming the evidence you used.\
+- `id` — the id you were given, unchanged.
+- `c` — the category code, copied exactly from the hierarchy.
+- `p` — your probability that the code is right, from 0 to 1. Use the full \
+range; below {threshold} the transaction goes to review instead of being \
+filed, which is the correct outcome when the text is genuinely ambiguous.
+- `r` — one short sentence naming the evidence you used. Include it **only** \
+when `p` is below {threshold}; those are the cases a person will read. Leave \
+it out otherwise.
+
+Return a result for every id you were given, and invent none.\
 """
 
 #: Cases the rule system got wrong or needed a hand-written rule for, taken
@@ -61,6 +69,7 @@ genuinely ambiguous.
 #: instructions state but that is easy to lose on a short merchant string.
 FEW_SHOT_EXAMPLES = [
     {
+        "id": 1,
         "text": "ACADEMY FAHRSCHULE HOHELUFTGBR MERSCH UND KOLLEGEN",
         "amount": -295.93,
         "process": "Lastschrift / Belastung",
@@ -73,7 +82,8 @@ FEW_SHOT_EXAMPLES = [
         ),
     },
     {
-        "text": "FRANZ MARTIN SUNTRUP UNTERHALT",
+        "id": 2,
+        "text": "MARTIN FALKENBERG UNTERHALT",
         "amount": 250.0,
         "process": "Übertrag / Überweisung",
         "major": "Income",
@@ -85,6 +95,7 @@ FEW_SHOT_EXAMPLES = [
         ),
     },
     {
+        "id": 3,
         "text": "1,75 PROZ.AUSLANDSENTGELT",
         "amount": -0.24,
         "process": "Lastschrift / Belastung",
@@ -97,6 +108,7 @@ FEW_SHOT_EXAMPLES = [
         ),
     },
     {
+        "id": 4,
         "text": "ENTGELT VISA-KREDITKARTE",
         "amount": -1.9,
         "process": "Kontoführungsentgelt",
@@ -106,6 +118,7 @@ FEW_SHOT_EXAMPLES = [
         "reason": "A recurring card charge billed by the bank itself.",
     },
     {
+        "id": 5,
         "text": "X(IE)-MSCI WORLD 1C WPKNR: A1XB5U ISIN: IE00BJ0KDQ92",
         "amount": -250.0,
         "process": "Wertpapiere",
@@ -117,6 +130,7 @@ FEW_SHOT_EXAMPLES = [
         ),
     },
     {
+        "id": 6,
         "text": "MENSA HARBURG",
         "amount": -3.6,
         "process": "Visa-Umsatz",
@@ -126,6 +140,7 @@ FEW_SHOT_EXAMPLES = [
         "reason": "A university canteen at a small amount is a cheap prepared meal.",
     },
     {
+        "id": 7,
         "text": "STUDIERENDENWERK HAMBURG",
         "amount": -413.0,
         "process": "Übertrag / Überweisung",
@@ -138,6 +153,7 @@ FEW_SHOT_EXAMPLES = [
         ),
     },
     {
+        "id": 8,
         "text": "SPOTIFY AB",
         "amount": -4.99,
         "process": "Lastschrift / Belastung",
@@ -147,6 +163,7 @@ FEW_SHOT_EXAMPLES = [
         "reason": "A music streaming subscription.",
     },
     {
+        "id": 9,
         "text": "WWW.STEAMPOWERED.COM",
         "amount": -19.99,
         "process": "Lastschrift / Belastung",
@@ -156,7 +173,8 @@ FEW_SHOT_EXAMPLES = [
         "reason": "Steam sells computer games.",
     },
     {
-        "text": "MAREN GERLACH WEIHNACHTSGELD VON MAMA OMA OPA",
+        "id": 10,
+        "text": "RIEKE FALKENBERG WEIHNACHTSGELD VON MAMA OMA OPA",
         "amount": 125.0,
         "process": "Übertrag / Überweisung",
         "major": "Gifts & Donations",
@@ -165,6 +183,7 @@ FEW_SHOT_EXAMPLES = [
         "reason": "An incoming private transfer described as a Christmas present.",
     },
     {
+        "id": 11,
         "text": "EDEKA BOECKER",
         "amount": 12.4,
         "process": "Lastschrift / Belastung",
@@ -176,6 +195,7 @@ FEW_SHOT_EXAMPLES = [
         ),
     },
     {
+        "id": 12,
         "text": "OTTO PAYMENTS",
         "amount": -89.24,
         "process": "Übertrag / Überweisung",
@@ -187,6 +207,7 @@ FEW_SHOT_EXAMPLES = [
         ),
     },
     {
+        "id": 13,
         "text": "COMMERZBANK ATM",
         "amount": -100.0,
         "process": "Bargeldauszahlung",
@@ -199,39 +220,61 @@ FEW_SHOT_EXAMPLES = [
 
 
 def render_hierarchy() -> str:
-    """The full hierarchy as an indented list, in its canonical order."""
+    """
+    The full hierarchy with its codes, in canonical order.
+
+    The codes come from app.categories, which generates them from this same
+    dictionary — the prompt, the validation and the reverse lookup cannot
+    drift apart because there is only one table.
+    """
     lines = []
     for major, minors in CATEGORY_HIERARCHY.items():
-        lines.append(f"{major}")
-        lines.extend(f"  - {minor}" for minor in minors)
+        lines.append(major)
+        lines.extend(f"  {code_for(major, minor)}  {minor}" for minor in minors)
     return "\n".join(lines)
 
 
-def render_examples() -> str:
-    """The few-shot examples as input/output pairs."""
+def render_examples(threshold: float) -> str:
+    """
+    The few-shot examples, shown in the answer format the model must produce.
+
+    Below the threshold the example carries a reason, above it does not, so
+    the rule is demonstrated rather than only described.
+    """
     blocks = []
     for example in FEW_SHOT_EXAMPLES:
+        code = code_for(example["major"], example["minor"])
+        answer = {"id": example["id"], "c": code, "p": example["confidence"]}
+        if example["confidence"] < threshold:
+            answer["r"] = example["reason"]
+        rendered = json.dumps(answer, ensure_ascii=False)[1:-1]
         blocks.append(
-            f"text: {example['text']}\n"
-            f"amount: {example['amount']}\n"
-            f"process: {example['process']}\n"
-            f"-> {example['major']} / {example['minor']} "
-            f"(confidence {example['confidence']}) — {example['reason']}"
+            f'{{"id": {example["id"]}, "text": "{example["text"]}", '
+            f'"amount": {example["amount"]}, '
+            f'"process": "{example["process"]}"}}\n'
+            f"-> {{{rendered}}}"
+            + (
+                f"    # {example['major']} / {example['minor']}"
+                if code
+                else "    # invalid"
+            )
         )
     return "\n\n".join(blocks)
 
 
-def build_system_prompt() -> str:
+def build_system_prompt(threshold: float) -> str:
     """
-    The constant part of every request.
+    The constant part of every request, ending at the cache breakpoint.
 
-    Must not contain anything that varies between requests, or the prompt
-    cache never gets a hit.
+    Must not contain anything that varies between requests, or the cached
+    prefix changes on every call and never gets a hit. The threshold is the
+    one exception: it is configuration, constant for a run, and the model
+    needs it to know when to justify itself.
     """
     return (
-        f"{INSTRUCTIONS}\n\n"
+        f"{INSTRUCTIONS.format(threshold=threshold)}\n\n"
         f"# Category hierarchy\n\n{render_hierarchy()}\n\n"
-        f"# Worked examples\n\n{render_examples()}\n"
+        f"# Worked examples\n\n{render_examples(threshold)}\n"
     )
 
 
@@ -239,12 +282,10 @@ def build_response_schema() -> dict:
     """
     The JSON schema the response is constrained to.
 
-    Majors and minors are enumerated, so the model cannot invent a name. It
-    can still pair a valid minor with the wrong major, which the schema has no
-    way to express — ``app.categories.coerce_pair`` catches that server-side.
+    ``c`` is enumerated over the codes the hierarchy defines, so the model
+    cannot name a pair that does not exist. ``r`` is optional: it is only
+    wanted below the threshold, where somebody will actually read it.
     """
-    majors = sorted(CATEGORY_HIERARCHY)
-    minors = sorted({minor for _, minor in iter_pairs()})
     return {
         "type": "object",
         "properties": {
@@ -253,19 +294,15 @@ def build_response_schema() -> dict:
                 "items": {
                     "type": "object",
                     "properties": {
-                        "id": {
-                            "type": "string",
-                            "description": "The id of the transaction being classified",
-                        },
-                        "major": {"type": "string", "enum": majors},
-                        "minor": {"type": "string", "enum": minors},
+                        "id": {"type": "integer"},
+                        "c": {"type": "string", "enum": all_codes()},
                         # The API rejects minimum/maximum on a number, so the
-                        # range is stated in the instructions and enforced by
+                        # range is stated in the instructions and clamped by
                         # the client when the response is parsed.
-                        "confidence": {"type": "number"},
-                        "reason": {"type": "string"},
+                        "p": {"type": "number"},
+                        "r": {"type": "string"},
                     },
-                    "required": ["id", "major", "minor", "confidence", "reason"],
+                    "required": ["id", "c", "p"],
                     "additionalProperties": False,
                 },
             }
