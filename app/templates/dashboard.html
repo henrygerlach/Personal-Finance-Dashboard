@@ -127,6 +127,27 @@
   </div>
 </div>
 
+{#
+  Every plot opens this one popup. A click resolves to a period and optionally
+  a category, and what it names is a net sum, so both directions are listed.
+#}
+<div id="detail-modal" class="modal detail-modal" role="dialog" aria-modal="true"
+     aria-labelledby="detail-title" hidden>
+  <div class="modal-content" role="document">
+    <div class="modal-header">
+      <h2 id="detail-title">
+        <span class="cat-swatch" id="detail-swatch" hidden></span>
+        <span id="detail-heading"></span>
+      </h2>
+      <button class="icon-button" id="detail-close" aria-label="Close">
+        &times;
+      </button>
+    </div>
+    <p class="field-note" id="detail-summary"></p>
+    <div class="detail-sides" id="detail-sides"></div>
+  </div>
+</div>
+
 <script>
   window.RENDER_BALANCES = {{ render_balance_section | tojson }};
 </script>

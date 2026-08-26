@@ -21,6 +21,7 @@ from app.parser import Parser
 from app.paypal import PayPalFormatError, import_export
 from app.paypal.records import looks_like_export
 from app.services import (
+    TOP_DETAIL_TRANSACTIONS,
     CategorizationService,
     ChartDataService,
     ComdirectBalanceService,
@@ -298,6 +299,45 @@ async def get_cashflow_data(
         JSON with months, data values, total, and available years
     """
     return await ChartDataService.get_cashflow_data(year=year)
+
+
+@router.get("/api/transaction-detail")
+async def get_transaction_detail(
+    month: Annotated[str | None, Query(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")] = None,
+    year: Annotated[int | None, Query()] = None,
+    category: Annotated[str | None, Query()] = None,
+    category_type: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=50)] = TOP_DETAIL_TRANSACTIONS,
+) -> dict:
+    """
+    Get the transactions behind one thing the dashboard drew.
+
+    Backs the drill-down popup every plot opens. A click always resolves to a
+    period and optionally a category, so one endpoint answers for all of them.
+    Both directions come back separately, because what was clicked is a net
+    sum and a refund filed under an expense category belongs to it just as
+    much as the spending does.
+
+    Query Parameters:
+        month: Month key in YYYY-MM format (optional)
+        year: Year to cover (optional; ignored when month is given, and
+            omitting both covers all of history)
+        category: Category to narrow to (optional)
+        category_type: Whether category names a major or a minor category.
+            Must match the granularity the plot is drawn at.
+        limit: How many transactions to return per direction
+
+    Returns:
+        JSON echoing the scope, with its net total and an incoming and
+        outgoing side
+    """
+    return await ChartDataService.get_transaction_detail(
+        month=month,
+        year=year,
+        category=category,
+        category_type=category_type,
+        limit=limit,
+    )
 
 
 @router.get("/api/account-balances")

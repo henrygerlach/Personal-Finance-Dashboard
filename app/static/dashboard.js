@@ -16,6 +16,7 @@
     formatPercent,
     formatMonth,
     formatMonthLong,
+    formatDay,
     token,
     prefersReducedMotion,
   } = window.Theme;
@@ -47,7 +48,15 @@
     Chart.defaults.font.size = 11;
     Chart.defaults.color = paperFaint;
     Chart.defaults.borderColor = rule;
-    Chart.defaults.animation = prefersReducedMotion() ? false : { duration: 400 };
+    // Mutate the animation defaults, never replace the object: Chart.js takes
+    // the list of keys it copies out of each animation spec from
+    // Object.keys(defaults.animation). Assigning a fresh object narrows that
+    // list, `type` is dropped from the built-in "colors" spec, and colour
+    // transitions fall back to interpolators[typeof from] — undefined for a
+    // colour string. The first hover then throws out of the animator's
+    // requestAnimationFrame callback, which never reschedules itself, and
+    // every chart built afterwards stays stuck on its opening frame.
+    Chart.defaults.animation.duration = prefersReducedMotion() ? 0 : 400;
 
     Chart.defaults.plugins.legend.labels.color = paperDim;
     Chart.defaults.plugins.legend.labels.boxWidth = 10;
@@ -60,8 +69,7 @@
     Chart.defaults.plugins.tooltip.position = "nearest";
     Chart.defaults.plugins.tooltip.external = externalTooltip;
     // Nothing of the tooltip is painted on the canvas any more, so its
-    // canvas-side animation is dead weight — and animating it while charts are
-    // being rebuilt is what makes Chart.js throw from its animator.
+    // canvas-side animation is dead weight.
     Chart.defaults.plugins.tooltip.animation = false;
     Chart.defaults.plugins.tooltip.animations = false;
   }
@@ -426,6 +434,12 @@
           [`Period total${SEP}${formatCurrency(total)}`]
         )
       );
+      // The spectrum is drawn at major granularity whatever the page is set
+      // to, so its clicks have to say so rather than inherit the filter.
+      makeElementClickable(seg, {
+        category: row.category,
+        categoryType: "major",
+      });
       bar.appendChild(seg);
 
       const key = document.createElement("div");
@@ -439,6 +453,10 @@
       key.children[1].textContent = row.category;
       key.querySelector(".spectrum-value").textContent = formatCurrency(row.spend);
       key.querySelector(".spectrum-share").textContent = formatPercent(share);
+      makeElementClickable(key, {
+        category: row.category,
+        categoryType: "major",
+      });
       keys.appendChild(key);
     });
 
@@ -451,7 +469,12 @@
 
   // --- Monthly stacked chart ------------------------------------------------
 
+
   function renderMonthlyChart(data, selected) {
+    // The open popup describes plots that are about to be replaced, and a
+    // filter change can remove what it names altogether.
+    closeDetail();
+
     // Stack in hierarchy order rather than alphabetically: minors of the same
     // major then sit together, and the stack reads as major-category bands.
     const shown = (data.categories || [])
@@ -533,8 +556,384 @@
       },
     };
 
+    // A band is what the click names here: one month of one category.
+    makeChartClickable(
+      config.options,
+      (chart, event) => bandScopeAt(chart, event, data.months, shown),
+      "monthlyChart"
+    );
+
     if (charts.monthly) charts.monthly.destroy();
     charts.monthly = new Chart(el("monthlyChart"), config);
+  }
+
+  // --- Transaction detail popup ---------------------------------------------
+  //
+  // Every plot on the page opens this one popup. A click resolves to a period
+  // and optionally a category, which is all the endpoint needs, so the charts
+  // differ only in what they can name: a bar names a month, a slice names a
+  // category over the selected year.
+  //
+  // What was clicked is a *net* sum, so the two directions are listed
+  // separately rather than merged into one ranking — a refund filed under an
+  // expense category belongs to the thing it shortens, and merging would let
+  // one large credit crowd out the payments it offsets.
+
+  // Clicks outrun the API the same way filter changes do, so an answer is
+  // rendered only while it is still the one that was asked for.
+  let detailTicket = 0;
+
+  // Focus is returned here on close, as the modal on the Categorize page does.
+  let detailReturnFocus = null;
+
+  /** The period the popup covers when a click does not name a month itself. */
+  function detailPeriodLabel() {
+    const year = currentYear();
+    return year ? String(year) : "All years";
+  }
+
+  /** Heading for a scope: what was clicked, then when. */
+  function detailTitle(scope) {
+    const when = scope.month ? formatMonthLong(scope.month) : detailPeriodLabel();
+    return scope.category ? `${scope.category} · ${when}` : when;
+  }
+
+  function openDetailModal() {
+    const modal = el("detail-modal");
+    if (!modal.hidden) return;
+    detailReturnFocus = document.activeElement;
+    modal.hidden = false;
+    document.body.classList.add("modal-open");
+    requestAnimationFrame(() => modal.classList.add("show"));
+    el("detail-close").focus();
+  }
+
+  function closeDetail() {
+    const modal = el("detail-modal");
+    if (!modal) return;
+    // The ticket is retired even when the popup is already closed: an answer
+    // still in flight would otherwise open a popup nobody asked for any more.
+    detailTicket += 1;
+    modal.classList.remove("show");
+    modal.hidden = true;
+    document.body.classList.remove("modal-open");
+    if (detailReturnFocus && detailReturnFocus.focus) detailReturnFocus.focus();
+    detailReturnFocus = null;
+  }
+
+  /**
+   * Open the popup for one scope.
+   *
+   * @param {object} scope           What was clicked.
+   * @param {string} [scope.month]   Month key, for a click that names a month.
+   * @param {string} [scope.category]      Category, for a click that names one.
+   * @param {string} [scope.categoryType]  Granularity of that category name;
+   *   defaults to the granularity the page is currently drawn at.
+   */
+  async function openDetail(scope) {
+    const modal = el("detail-modal");
+    if (!modal) return;
+    hideTip();
+
+    const ticket = (detailTicket += 1);
+    // Read once, at the moment of the click: it decides how the rows name
+    // their category, and the answer arrives later.
+    const granularity = currentGranularity();
+
+    // Show the frame straight away: the click has to feel answered even while
+    // the request is out.
+    setDetailHead(detailTitle(scope), scope.category, "");
+    el("detail-sides").innerHTML = '<p class="spectrum-empty">Loading…</p>';
+    setDetailSingleColumn(true);
+    openDetailModal();
+
+    const params = new URLSearchParams();
+    if (scope.month) {
+      params.append("month", scope.month);
+    } else {
+      const year = currentYear();
+      if (year) params.append("year", year);
+    }
+    if (scope.category) {
+      params.append("category", scope.category);
+      params.append("category_type", scope.categoryType || granularity);
+    }
+
+    let payload;
+    try {
+      const response = await fetch(`/api/transaction-detail?${params}`);
+      if (!response.ok) throw new Error(String(response.status));
+      payload = await response.json();
+    } catch (error) {
+      if (ticket !== detailTicket) return;
+      el("detail-sides").innerHTML =
+        '<p class="spectrum-empty">Could not load the transactions.</p>';
+      return;
+    }
+    if (ticket !== detailTicket) return;
+
+    renderDetail(payload, scope, granularity);
+  }
+
+  function setDetailHead(heading, category, summary) {
+    const swatch = el("detail-swatch");
+    swatch.hidden = !category;
+    if (category) swatch.style.background = categoryColor(category);
+    el("detail-heading").textContent = heading;
+    el("detail-summary").textContent = summary;
+  }
+
+  /** Narrow the popup when only one direction is in it, so rows stay close. */
+  function setDetailSingleColumn(single) {
+    el("detail-modal")
+      .querySelector(".modal-content")
+      .classList.toggle("is-single", single);
+  }
+
+  /**
+   * One direction of the scope, or null when nothing moved that way.
+   *
+   * @param {object} side        The API's incoming or outgoing summary.
+   * @param {string} label       What this direction is called in the popup.
+   * @param {string} drilled     The category the popup was opened on, if any.
+   * @param {string} granularity Which of a row's two category names to show,
+   *   "major" or "minor". The page's own setting: the popup should talk about
+   *   categories the way the charts behind it do.
+   */
+  function renderDetailSide(side, label, drilled, granularity) {
+    if (!side || !side.count) return null;
+
+    const box = document.createElement("div");
+    box.className = "detail-side";
+
+    const head = document.createElement("div");
+    head.className = "detail-side-head";
+    head.innerHTML = '<span class="label"></span><span class="num"></span>';
+    head.querySelector(".label").textContent = label;
+    const total = head.querySelector(".num");
+    total.textContent = formatCurrency(side.total);
+    total.classList.add(side.total < 0 ? "is-negative" : "is-positive");
+    box.appendChild(head);
+
+    const list = document.createElement("ol");
+    list.className = "detail-list";
+    (side.transactions || []).forEach((row) => {
+      const item = document.createElement("li");
+      item.className = "detail-row";
+      item.innerHTML =
+        '<span class="detail-date"></span>' +
+        '<span class="detail-name"></span>' +
+        '<span class="detail-amount num"></span>';
+
+      item.querySelector(".detail-date").textContent = formatDay(row.date);
+
+      const name = item.querySelector(".detail-name");
+      name.textContent = row.merchant;
+      // The bank's own line is what the merchant was derived from, so it is
+      // kept within reach without taking a second row of space.
+      name.title = row.booking_text;
+
+      if (row.is_recurring) {
+        const badge = document.createElement("span");
+        badge.className = "detail-badge";
+        badge.textContent = "repeats";
+        name.appendChild(document.createTextNode(" "));
+        name.appendChild(badge);
+      }
+
+      // Only worth saying when the heading does not already say it: a click on
+      // a month covers every category, and a major category covers its minors.
+      const rowCategory = granularity === "major" ? row.major : row.minor;
+      if (rowCategory && rowCategory !== drilled) {
+        const tag = document.createElement("span");
+        tag.className = "detail-tag";
+        tag.textContent = rowCategory;
+        tag.style.borderLeftColor = categoryColor(rowCategory);
+        name.appendChild(document.createElement("br"));
+        name.appendChild(tag);
+      }
+
+      const amount = item.querySelector(".detail-amount");
+      amount.textContent = formatCurrency(row.amount);
+      amount.classList.add(row.amount < 0 ? "is-negative" : "is-positive");
+
+      list.appendChild(item);
+    });
+    box.appendChild(list);
+
+    if (side.hidden_count) {
+      const rest = document.createElement("p");
+      rest.className = "detail-rest";
+      rest.textContent =
+        `${side.hidden_count} more, together ${formatCurrency(side.rest)}`;
+      box.appendChild(rest);
+    }
+
+    return box;
+  }
+
+  function renderDetail(payload, scope, granularity) {
+    setDetailHead(
+      detailTitle(scope),
+      payload.category,
+      `net ${formatCurrency(payload.net)} · ` +
+        `${payload.count} transaction${payload.count === 1 ? "" : "s"}`
+    );
+
+    const sides = el("detail-sides");
+    sides.innerHTML = "";
+    // Money out first: the dashboard is mostly spending, so that is what a
+    // click is usually asking about.
+    const boxes = [
+      renderDetailSide(payload.outgoing, "Money out", payload.category, granularity),
+      renderDetailSide(payload.incoming, "Money in", payload.category, granularity),
+    ].filter(Boolean);
+    boxes.forEach((node) => sides.appendChild(node));
+
+    setDetailSingleColumn(boxes.length < 2);
+
+    if (!boxes.length) {
+      sides.innerHTML =
+        '<p class="spectrum-empty">Nothing was booked here.</p>';
+    }
+  }
+
+  function wireDetailModal() {
+    const modal = el("detail-modal");
+    if (!modal) return;
+    el("detail-close").addEventListener("click", closeDetail);
+    modal.addEventListener("click", (event) => {
+      if (event.target === modal) closeDetail();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !modal.hidden) closeDetail();
+    });
+  }
+
+  // --- Making a plot clickable ----------------------------------------------
+
+  /**
+   * Give a canvas chart the pointer cursor and a click that opens the popup.
+   *
+   * @param {object}   options            Chart.js options being built.
+   * @param {Function} scopeAt            (chart, event) -> scope, or null.
+   * @param {string}   canvasId           The canvas the chart is drawn on.
+   */
+  function makeChartClickable(options, scopeAt, canvasId) {
+    options.onHover = (event, elements, chart) => {
+      const canvas = event.native && event.native.target;
+      if (canvas) {
+        canvas.style.cursor = scopeAt(chart, event) ? "pointer" : "default";
+      }
+    };
+    options.onClick = (event, elements, chart) => {
+      const scope = scopeAt(chart, event);
+      if (scope) openDetail(scope);
+    };
+    // onHover only fires inside the plot area, so leaving it would otherwise
+    // strand the pointer cursor. The canvas outlives every chart built on it.
+    const canvas = el(canvasId);
+    if (canvas && !canvas.dataset.cursorReset) {
+      canvas.dataset.cursorReset = "1";
+      canvas.addEventListener("mouseleave", (event) => {
+        event.target.style.cursor = "default";
+      });
+    }
+    return options;
+  }
+
+  /**
+   * Give a plain DOM element — a spectrum segment, a legend row — the same
+   * click. The canvas charts cannot be reached by keyboard at all, so these
+   * are also the accessible way to every category the page draws.
+   */
+  function makeElementClickable(node, scope) {
+    node.classList.add("is-clickable");
+    node.setAttribute("role", "button");
+    if (!node.hasAttribute("tabindex")) node.tabIndex = 0;
+    node.addEventListener("click", () => openDetail(scope));
+    node.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openDetail(scope);
+      }
+    });
+  }
+
+  /** The month column under a chart event, or null when the pointer is off it. */
+  function monthScopeAt(chart, event, months) {
+    const hits = chart.getElementsAtEventForMode(
+      event,
+      "index",
+      { intersect: false },
+      true
+    );
+    // January is index 0, so the miss has to be tested for explicitly.
+    if (!hits.length) return null;
+    const month = (months || [])[hits[0].index];
+    return month ? { month } : null;
+  }
+
+  /**
+   * The band under a chart event: one month of one category.
+   *
+   * The month is settled by the horizontal position alone, so a click can
+   * never land on a neighbouring column; only which band within it is decided
+   * by the vertical one. Chart.js's own nearest-element search does not do:
+   * it measures to element centres, and the categories with nothing in this
+   * month all sit collapsed on the zero line, so a click in the empty space
+   * above a stack resolves to some unrelated band of another month.
+   *
+   * A click that misses every band falls back to the closest one in the same
+   * column, because with a stack this deep most bands are only a few pixels
+   * tall and demanding an exact hit makes the drill-down feel broken.
+   */
+  function bandScopeAt(chart, event, months, categories) {
+    const column = chart.getElementsAtEventForMode(
+      event,
+      "index",
+      { intersect: false },
+      true
+    );
+    if (!column.length) return null;
+    const index = column[0].index;
+    const month = (months || [])[index];
+    if (!month) return null;
+
+    let inside = null;
+    let closest = null;
+    categories.forEach((category, datasetIndex) => {
+      const element = chart.getDatasetMeta(datasetIndex).data[index];
+      if (!element) return;
+      const { y, base } = element.getProps(["y", "base"], true);
+      const top = Math.min(y, base);
+      const bottom = Math.max(y, base);
+      // A category with nothing in this month draws no band to aim at.
+      if (bottom - top < 0.5) return;
+      if (event.y >= top && event.y < bottom) inside = category;
+      const distance = event.y < top ? top - event.y : event.y - bottom;
+      if (!closest || distance < closest.distance) {
+        closest = { category, distance };
+      }
+    });
+
+    const category = inside || (closest && closest.category);
+    return category ? { month, category } : null;
+  }
+
+  /** The arc under a chart event, mapped back to the row that drew it. */
+  function arcScopeAt(chart, event, rows) {
+    const hits = chart.getElementsAtEventForMode(
+      event,
+      "nearest",
+      { intersect: true },
+      true
+    );
+    if (!hits.length) return null;
+    const row = rows[hits[0].index];
+    // The collapsed tail stands for many categories at once and names none.
+    if (!row || row.muted) return null;
+    return { category: row.category };
   }
 
   // --- Cashflow chart -------------------------------------------------------
@@ -664,6 +1063,13 @@
       },
     };
 
+    // Its bars are months too, so a click means the same thing here.
+    makeChartClickable(
+      config.options,
+      (chart, event) => monthScopeAt(chart, event, data.months),
+      "cashflowChart"
+    );
+
     if (charts.cashflow) charts.cashflow.destroy();
     charts.cashflow = new Chart(el("cashflowChart"), {
       ...config,
@@ -719,6 +1125,8 @@
         row[valueKey]
       );
       item.querySelector(".legend-share").textContent = formatPercent(share);
+      // The collapsed tail stands for many categories at once and names none.
+      if (!row.muted) makeElementClickable(item, { category: row.category });
       list.appendChild(item);
     });
 
@@ -758,6 +1166,13 @@
         },
       },
     };
+
+    // A slice names a category; the period comes from the year filter.
+    makeChartClickable(
+      config.options,
+      (chart, event) => arcScopeAt(chart, event, collapsed),
+      canvasId
+    );
 
     if (charts[chartKey]) charts[chartKey].destroy();
     charts[chartKey] = new Chart(el(canvasId), config);
@@ -978,6 +1393,7 @@
   async function init() {
     themeCharts();
     wireMultiselect();
+    wireDetailModal();
     if (shouldLoadBalances) loadBalances();
 
     updateFilterLabel();
