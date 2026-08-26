@@ -13,9 +13,12 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # Database
+    # Database. The name comes from DATABASE_NAME so a script can never carry
+    # a hard-coded target: "bank_analyzer" belongs to the previous version of
+    # this app and is still in use, so this project works against its own
+    # database and must not write to that one.
     mongodb_url: str = "mongodb://localhost:27017"
-    database_name: str = "bank_analyzer"
+    database_name: str = "bank_analyzer_dev"
 
     # Logging
     log_level: str = "INFO"
