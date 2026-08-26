@@ -33,9 +33,26 @@ import re
 #: real merchant, when present, sits inside the booking text.
 _PAYPAL_PATTERN = re.compile(r"\bPayPal\b|\bPP\.\d+\.PP\b", re.IGNORECASE)
 
+
+def _wrap_tolerant(phrase: str) -> str:
+    """
+    A pattern for ``phrase`` that survives Comdirect's line wrapping.
+
+    Fields are chopped into 35-character pieces and rejoined with a space,
+    which lands wherever it lands. "Ihr Einkauf bei" occurs in the live data
+    as "Ihr Ei nkauf bei", "Ihr Ein kauf bei", "Ihr Einkau f bei", "Ihr E
+    inkauf bei", "Ihr Einkauf be i" and more — seven variants of one phrase.
+    Matching each by hand is how the first version of this missed 164
+    merchants, so the space is allowed between any two characters instead.
+    """
+    return r"\s*".join(re.escape(char) for char in phrase if not char.isspace())
+
+
+#: The phrase that marks the end of a PayPal merchant name.
+_PURCHASE_MARKER = _wrap_tolerant("Ihr Einkauf bei")
+
 #: The merchant in a PayPal line sits between the last dot-space separator and
-#: "Ihr Einkauf bei". Comdirect wraps that phrase mid-word, so "Einkauf" may
-#: arrive split.
+#: "Ihr Einkauf bei".
 #:
 #: The separator must be a dot followed by whitespace. A dot inside the name
 #: itself never is ("ASOS.com"), which is what keeps domain merchants intact —
@@ -44,7 +61,7 @@ _PAYPAL_PATTERN = re.compile(r"\bPayPal\b|\bPP\.\d+\.PP\b", re.IGNORECASE)
 #: ``.*`` is greedy so the *last* separator wins; otherwise the match would
 #: start inside PayPal's own "S.a r.l." and swallow the field label.
 _PAYPAL_MERCHANT = re.compile(
-    r".*\.\s+([^,]*?)\s*,\s*Ihr\s+Ei\s*nkauf\s+bei",
+    rf".*\.\s+([^,]*?)\s*,\s*{_PURCHASE_MARKER}",
     re.IGNORECASE,
 )
 
@@ -71,7 +88,25 @@ _FIELD_LABELS = re.compile(
 #: Everything from the trailing reference onwards carries no merchant information.
 _REFERENCE_TAIL = re.compile(r"\bRef\.\s*\S*", re.IGNORECASE)
 
+#: Card-terminal providers that print their own name in front of the shop's.
+#: The merchant behind the prefix is the one worth caching — "SumUp Hansa
+#: Kebab" is a kebab shop, not a payment company. Stripe and Klarna behave the
+#: same way but do not occur in this data, so they are listed without a test.
+_PROCESSOR_PREFIX = re.compile(
+    r"^\s*(?:SumUp|Stripe|Klarna|iZettle|Zettle)\s+", re.IGNORECASE
+)
+
 _NOISE_PATTERNS = [
+    # Marketing suffixes some chains append to the booking line.
+    re.compile(r"\bSAGT\s+DANKE\b\.?", re.IGNORECASE),
+    # Securities identifiers; the fund name in front of them is the merchant.
+    re.compile(r"\bWPKNR\s*:\s*\S+", re.IGNORECASE),
+    re.compile(r"\bISIN\s*:\s*\S+", re.IGNORECASE),
+    # Foreign-currency withdrawals append the local amount and rate.
+    # No word boundary: the wrap glues these onto the preceding token
+    # ("Saigon Branc690Betrag: -1500000,00 VNDKurs: ...").
+    re.compile(r"Betrag\s*:.*$", re.IGNORECASE | re.DOTALL),
+    re.compile(r"Kurs\s*:.*$", re.IGNORECASE | re.DOTALL),
     # Bank identifiers
     re.compile(r"Kto/IBAN\s*:\s*[A-Z]{2}\d{2}[A-Z0-9]*", re.IGNORECASE),
     re.compile(r"BLZ/BIC\s*:\s*[A-Z0-9]+", re.IGNORECASE),
@@ -81,7 +116,7 @@ _NOISE_PATTERNS = [
     re.compile(r"\bKARTE\s*\d+", re.IGNORECASE),
     # PayPal plumbing
     re.compile(r"\bPP\.\d+\.PP\b", re.IGNORECASE),
-    re.compile(r"\bIhr\s+Ei\s*nkauf\s+bei\b", re.IGNORECASE),
+    re.compile(rf"\b{_PURCHASE_MARKER}\b", re.IGNORECASE),
     re.compile(r"\bABBUCH(?:UNG)?\b", re.IGNORECASE),
     # Billing periods: "Zeitraum: 01.12.2023 bis 31.12.2023"
     re.compile(r"\bZeitraum\s*:.*?(?=\bRef\.|$)", re.IGNORECASE | re.DOTALL),
@@ -181,7 +216,7 @@ def normalize_merchant(booking_text: str | None, process: str | None = None) -> 
     if not booking_text:
         return ""
 
-    text = booking_text
+    text = _PROCESSOR_PREFIX.sub("", booking_text)
     if is_paypal(text):
         # The processor's own name would otherwise swallow every PayPal
         # merchant into one cache entry.
