@@ -11,8 +11,9 @@ from fastapi.templating import Jinja2Templates
 
 from app.categorizer import Categorizer
 from app.classification.client import ClassificationError
-from app.classification.service import ClassificationService, apply
-from app.config import get_logger
+from app.classification.comparison import write_comparison
+from app.classification.service import ClassificationService, apply, report_lines
+from app.config import get_logger, settings
 from app.constants import CATEGORY_HIERARCHY
 from app.models import SOURCE_PENDING, CategoryRule, Transaction
 from app.parser import Parser
@@ -333,6 +334,7 @@ async def upload_csv(files: list[UploadFile] = File(...)) -> dict:
 
     imported_total = 0
     file_results = []
+    imported_new: list[Transaction] = []
 
     for file in files:
         try:
@@ -352,6 +354,7 @@ async def upload_csv(files: list[UploadFile] = File(...)) -> dict:
                     file_skipped += 1
                     continue
                 await transaction.insert()
+                imported_new.append(transaction)
                 file_imported += 1
 
             imported_total += file_imported
@@ -374,11 +377,57 @@ async def upload_csv(files: list[UploadFile] = File(...)) -> dict:
                 detail=f"Parsing error in {file.filename}: {str(e)}",
             )
 
-    return {
+    result: dict = {
         "status": "success",
         "imported": imported_total,
         "files": file_results,
     }
+
+    if imported_new:
+        result.update(await _classify_import(imported_new))
+
+    return result
+
+
+async def _classify_import(transactions: list[Transaction]) -> dict:
+    """
+    Run the classifier over freshly imported transactions.
+
+    The rule engine has already had its say during parsing, and its verdict is
+    still on the transaction when this runs. Both are written to the
+    comparison log before anything is overwritten, which is the only way to
+    see where they differ on real imports — and therefore the only basis for
+    deciding the rule engine can go.
+
+    A classification failure must not fail the import: the transactions are
+    already stored, they simply keep whatever the rules said.
+    """
+    summary: dict = {}
+    try:
+        run = await ClassificationService().classify(transactions)
+    except ClassificationError as error:
+        logger.warning("Import not classified: %s", error)
+        return {"classification": {"status": "unavailable", "detail": str(error)}}
+    except Exception as error:  # noqa: BLE001 — the import itself must survive
+        logger.error("Classification failed during import: %s", error)
+        return {"classification": {"status": "failed", "detail": str(error)}}
+
+    if settings.comparison_mode_enabled:
+        path, agreed, differed = write_comparison(transactions, run.classifications)
+        summary["comparison"] = {
+            "log": str(path),
+            "agreed": agreed,
+            "differed": differed,
+        }
+
+    if settings.classification_enabled:
+        summary["persisted"] = await apply(run.classifications, transactions)
+    else:
+        # The rule engine stays in charge; the log still records both.
+        summary["persisted"] = 0
+
+    summary["report"] = report_lines(run, len(transactions))
+    return {"classification": summary}
 
 
 # ============================================================================

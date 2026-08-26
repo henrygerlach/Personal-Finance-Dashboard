@@ -45,6 +45,15 @@ class Settings(BaseSettings):
     #: There is no merchant in those lines for any classifier to read, so they
     #: are filed deterministically rather than sent to the API. The category
     #: is knowingly approximate; classification_source marks them as such.
+    #: While the rule engine is still in place, log both verdicts for every
+    #: imported transaction so the disagreements can be read before it is
+    #: switched off.
+    comparison_mode_enabled: bool = True
+    comparison_log_path: str = "logs/classification-comparison.log"
+    #: Which system's verdict is actually stored. False keeps the rule engine
+    #: in charge while the comparison log is being read.
+    classification_enabled: bool = True
+
     paypal_fallback_major: str = "Shopping"
     paypal_fallback_minor: str = "General Merchandise"
 
