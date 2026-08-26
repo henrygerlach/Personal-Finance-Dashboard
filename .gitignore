@@ -24,3 +24,6 @@ venv/
 .idea/
 .vscode/
 logs/
+
+# data
+paypal_data/

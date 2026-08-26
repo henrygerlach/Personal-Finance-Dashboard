@@ -79,6 +79,14 @@ run = "poetry run python scripts/repair_refunds.py"
 description = "Score the classifier against the hand-made categories"
 run = "poetry run python scripts/eval_classification.py"
 
+[tasks.import-paypal]
+description = "Import PayPal activity exports so truncated bank lines find their payee"
+run = "poetry run python scripts/import_paypal.py"
+
+[tasks.resolve-paypal]
+description = "Re-file PayPal transactions whose payee the export recovered (--dry-run to preview)"
+run = "poetry run python scripts/resolve_paypal.py"
+
 [tasks.backup]
 description = "Dump the working database before anything that rewrites it"
 run = """

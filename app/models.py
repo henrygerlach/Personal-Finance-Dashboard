@@ -76,6 +76,21 @@ class Transaction(Document):
     classification_source: Optional[str] = Field(
         None, description=f"One of {sorted(CLASSIFICATION_SOURCES)}."
     )
+    paypal_counterparty: Optional[str] = Field(
+        None,
+        description=(
+            "Merchant or person recovered from a PayPal export for a booking "
+            "line whose payee Comdirect truncated away. Set by app.paypal; "
+            "None means the line needed no help or none could be found."
+        ),
+    )
+    paypal_settlement_code: Optional[str] = Field(
+        None,
+        description=(
+            "PayPal transaction code of the settlement this line was matched "
+            "to, so a recovered merchant can be audited back to its source."
+        ),
+    )
     legacy_major: Optional[str] = Field(
         None,
         description=(
@@ -187,6 +202,52 @@ class MerchantCategory(Document):
 
     class Settings:
         name = "merchant_categories"
+
+
+class PayPalRecord(Document):
+    """
+    One row of a PayPal activity export, stored as it was read.
+
+    The collection is the raw import, not an interpretation of it: the meaning
+    of a row — whether it settles against the bank, which merchant stands
+    behind it — is worked out in app.paypal.ledger every time the ledger is
+    built. Keeping the two apart means improving that logic needs no
+    re-import, and re-importing an overlapping export changes nothing.
+
+    ``code`` is PayPal's own transaction code and is unique, which is what
+    makes repeated imports of overlapping downloads idempotent.
+    """
+
+    code: Indexed(str, unique=True) = Field(
+        ..., description="PayPal transaction code (Transaktionscode)."
+    )
+    date: datetime = Field(..., description="Date PayPal recorded the movement.")
+    kind: str = Field(..., description="PayPal's transaction type, verbatim.")
+    status: str = Field("", description="PayPal's status, verbatim.")
+    name: str = Field("", description="Counterparty as PayPal recorded it.")
+    currency: str = Field("", description="ISO currency code of the amount.")
+    gross: float = Field(
+        ...,
+        description=(
+            "Gross amount in PayPal's sign convention: negative leaves the "
+            "PayPal balance, positive enters it."
+        ),
+    )
+    related_code: str = Field(
+        "",
+        description=(
+            "Transaction code this row belongs to. The thread the ledger "
+            "pulls to find a merchant for a settlement."
+        ),
+    )
+    item_title: str = Field("", description="What was bought, when recorded.")
+    imported_at: datetime = Field(
+        default_factory=datetime.utcnow,
+        description="When this row was first stored.",
+    )
+
+    class Settings:
+        name = "paypal_records"
 
 
 class ComdirectBalanceSnapshot(Document):

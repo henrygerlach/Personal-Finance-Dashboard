@@ -18,6 +18,8 @@ from app.config import get_logger, settings
 from app.constants import CATEGORY_HIERARCHY
 from app.models import SOURCE_PENDING, CategoryRule, Transaction
 from app.parser import Parser
+from app.paypal import PayPalFormatError, import_export
+from app.paypal.records import looks_like_export
 from app.services import (
     CategorizationService,
     ChartDataService,
@@ -420,17 +422,38 @@ async def upload_csv(files: list[UploadFile] = File(...)) -> dict:
 
     # Load existing rules
     rules = await CategoryRule.find_all().to_list()
-    categorizer = Categorizer(rules=rules)
     parser = Parser(rules=rules)
 
     imported_total = 0
     file_results = []
     imported_new: list[Transaction] = []
+    paypal_rows = 0
 
     for file in files:
         try:
-            # Read and parse CSV
             contents = await file.read()
+
+            # A PayPal activity export is not a statement and holds no
+            # transactions of its own. It is evidence about statements: the
+            # payees Comdirect truncated out of its PayPal lines. Storing it
+            # here means one upload control for both, and the classifier picks
+            # the payees up on the next import. See app.paypal.
+            if looks_like_export(contents):
+                result = await import_export(contents)
+                paypal_rows += result.added
+                file_results.append(
+                    {
+                        "filename": file.filename,
+                        "kind": "paypal",
+                        "imported": result.added,
+                        "skipped": result.already_known,
+                    }
+                )
+                logger.info(
+                    "Processed %s (PayPal): %s", file.filename, result.summary()
+                )
+                continue
+
             transactions = parser.parse(contents)
 
             # Transactions are already categorized during parsing.
@@ -461,6 +484,12 @@ async def upload_csv(files: list[UploadFile] = File(...)) -> dict:
                 f"{file_skipped} skipped"
             )
 
+        except PayPalFormatError as e:
+            logger.error(f"Error reading PayPal export {file.filename}: {e}")
+            raise HTTPException(
+                status_code=422,
+                detail=f"PayPal export unreadable in {file.filename}: {e}",
+            )
         except Exception as e:
             logger.error(f"Error parsing {file.filename}: {str(e)}")
             raise HTTPException(
@@ -473,6 +502,8 @@ async def upload_csv(files: list[UploadFile] = File(...)) -> dict:
         "imported": imported_total,
         "files": file_results,
     }
+    if paypal_rows:
+        result["paypal_rows"] = paypal_rows
 
     if imported_new:
         result.update(await _classify_import(imported_new))
