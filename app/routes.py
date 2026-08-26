@@ -34,6 +34,8 @@ templates = Jinja2Templates(directory="app/templates")
 # Exposed to every template: the frontend derives its category colour palette
 # from this hierarchy instead of maintaining a parallel list of hex values.
 templates.env.globals["CATEGORY_HIERARCHY"] = NEW_CATEGORY_HIERARCHY
+# The rule pages are hidden from the navigation while the engine is off.
+templates.env.globals["RULES_ENABLED"] = settings.rules_enabled
 
 
 def get_templates() -> Jinja2Templates:
@@ -59,6 +61,7 @@ async def dashboard(request: Request) -> HTMLResponse:
             "uncategorized_count": (
                 await CategorizationService.get_uncategorized_count()
             ),
+            "review_count": await ReviewService.count(),
             "render_balance_section": (
                 ComdirectBalanceService.should_render_balance_section()
             ),
@@ -87,6 +90,10 @@ async def categorize_page(
 ) -> HTMLResponse:
     """
     Render the categorization page with an uncategorized transaction.
+
+    Kept working after the rule engine was switched off, because switching it
+    back on must not require restoring a page first. It writes rules that only
+    take effect while ``rules_enabled`` is true.
 
     Query Parameters:
         skip: Offset into the review queue, used by the Skip action to move on
@@ -496,7 +503,9 @@ async def _classify_import(transactions: list[Transaction]) -> dict:
         logger.error("Classification failed during import: %s", error)
         return {"classification": {"status": "failed", "detail": str(error)}}
 
-    if settings.comparison_mode_enabled:
+    # The comparison needs both verdicts. With the rule engine off there is
+    # only one, and a log of the classifier agreeing with itself is noise.
+    if settings.comparison_mode_enabled and settings.rules_enabled:
         path, agreed, differed = write_comparison(transactions, run.classifications)
         summary["comparison"] = {
             "log": str(path),

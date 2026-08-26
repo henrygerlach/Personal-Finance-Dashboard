@@ -1,6 +1,7 @@
 """
 CSV file parser for Comdirect bank statements.
 """
+
 import csv
 import hashlib
 import io
@@ -9,8 +10,9 @@ from typing import Optional, Sequence
 
 import pandas as pd
 
+from app.categories import NEEDS_REVIEW
 from app.categorizer import Categorizer
-from app.config import get_logger
+from app.config import get_logger, settings
 from app.constants import (
     COLUMN_ALIASES,
     COMDIRECT_CSV_ENCODING,
@@ -106,13 +108,20 @@ class Parser:
                 amount=row["amount"],
                 booking_text=row["booking_text"],
                 process=row["process"] if not pd.isna(row["process"]) else None,
-                major_category="Other",
-                minor_category="Uncategorized",
+                # Awaiting a decision. With the rule engine off these stay
+                # as they are until the classifier runs, so a failed
+                # classification leaves them visibly unreviewed rather than
+                # silently filed under a legacy category.
+                major_category=NEEDS_REVIEW[0],
+                minor_category=NEEDS_REVIEW[1],
             )
             transactions.append(transaction)
 
-        # Apply categorization rules
-        self.categorizer.categorize(transactions=transactions)
+        # The rule engine is applied only while it is switched on. With it
+        # off, transactions arrive uncategorised and the classifier decides —
+        # it is the single source of categories now.
+        if settings.rules_enabled:
+            self.categorizer.categorize(transactions=transactions)
 
         return transactions
 

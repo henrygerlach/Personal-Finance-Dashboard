@@ -45,9 +45,17 @@ class Settings(BaseSettings):
     #: There is no merchant in those lines for any classifier to read, so they
     #: are filed deterministically rather than sent to the API. The category
     #: is knowingly approximate; classification_source marks them as such.
+    #: The hand-written substring rules are switched off, not deleted. They
+    #: served 2,676 transactions and 609 rules before the classifier replaced
+    #: them; the engine, the rule library and the /categorize page all remain
+    #: so the decision can be reversed by flipping this back on.
+    rules_enabled: bool = False
+
     #: While the rule engine is still in place, log both verdicts for every
     #: imported transaction so the disagreements can be read before it is
     #: switched off.
+    #: Only meaningful while rules_enabled is true — there is nothing to
+    #: compare against once the rule engine no longer produces a verdict.
     comparison_mode_enabled: bool = True
     comparison_log_path: str = "logs/classification-comparison.log"
     #: Which system's verdict is actually stored. False keeps the rule engine
