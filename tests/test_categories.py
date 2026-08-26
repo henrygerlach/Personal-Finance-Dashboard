@@ -10,16 +10,23 @@ import pytest
 
 from app.categories import (
     CATEGORY_HIERARCHY,
+    CODE_BY_PAIR,
     MAJOR_BY_MINOR,
     NEEDS_REVIEW,
+    NEEDS_REVIEW_CODE,
+    PAIR_BY_CODE,
+    all_codes,
+    code_for,
     coerce_pair,
     flow_type_for,
     is_transfer,
+    is_valid_code,
     is_valid_major,
     is_valid_pair,
     iter_pairs,
     major_categories,
     minor_categories,
+    pair_for_code,
 )
 
 
@@ -154,3 +161,64 @@ def test_hierarchy_order_is_preserved():
     assert major_categories()[0] == "Income"
     assert major_categories()[-1] == "Uncategorized"
     assert minor_categories("Income")[0] == "Salary & Wages"
+
+
+# --- Category codes ----------------------------------------------------------
+
+
+def test_every_pair_has_a_code_and_every_code_a_pair():
+    """The two tables are one mapping seen from both sides."""
+    assert len(CODE_BY_PAIR) == len(PAIR_BY_CODE) == len(list(iter_pairs()))
+    for pair, code in CODE_BY_PAIR.items():
+        assert PAIR_BY_CODE[code] == pair
+
+
+def test_codes_are_derived_from_hierarchy_order():
+    """
+    Codes are generated, never maintained by hand, so there is one place to
+    change a category. 7.1 is the first minor of the seventh major.
+    """
+    majors = major_categories()
+    assert code_for(majors[6], minor_categories(majors[6])[0]) == "7.1"
+    assert code_for(majors[0], minor_categories(majors[0])[0]) == "1.1"
+    assert pair_for_code("7.1") == ("Leisure & Entertainment", "Streaming & Media")
+
+
+def test_a_code_names_a_pair_so_an_impossible_combination_cannot_be_expressed():
+    """
+    This is the reason codes exist. Two separate name fields can each be valid
+    while the pair is not — the model returned "Shopping / Furniture &
+    Household Goods" on the first live run, where the minor exists but sits
+    under Housing. There is no code for that.
+    """
+    assert code_for("Shopping", "Furniture & Household Goods") is None
+    assert code_for("Housing", "Furniture & Household Goods") is not None
+    resolved = {pair_for_code(code) for code in all_codes()}
+    assert all(is_valid_pair(*pair) for pair in resolved)
+
+
+@pytest.mark.parametrize(
+    "code", ["99.9", "0.1", "7", "7.", "7.99", "", "seven.one", None, 7.1, "1.1.1"]
+)
+def test_an_unknown_code_resolves_to_review_rather_than_raising(code):
+    """
+    A code that is not in the hierarchy means the model produced something
+    that is not a category. That belongs in review, not in whichever category
+    happens to sit nearby, and it must not take the batch down either.
+    """
+    assert not is_valid_code(code)
+    assert pair_for_code(code) == NEEDS_REVIEW
+
+
+def test_codes_tolerate_surrounding_whitespace():
+    assert pair_for_code(" 7.1 ") == ("Leisure & Entertainment", "Streaming & Media")
+
+
+def test_the_review_bucket_has_its_own_code():
+    assert is_valid_code(NEEDS_REVIEW_CODE)
+    assert pair_for_code(NEEDS_REVIEW_CODE) == NEEDS_REVIEW
+
+
+def test_codes_round_trip_for_every_pair():
+    for major, minor in iter_pairs():
+        assert pair_for_code(code_for(major, minor)) == (major, minor)
