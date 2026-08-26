@@ -18,11 +18,13 @@ transactions and nothing else. One bad batch must never take an import down.
 import asyncio
 import json
 import random
+import time
 from dataclasses import dataclass
 from typing import Sequence
 
 import anthropic
 
+from app.classification.pricing import CallRecord, UsageLedger
 from app.classification.prompt import build_response_schema, build_system_prompt
 from app.config import get_logger, settings
 
@@ -98,6 +100,8 @@ class ClaudeClassifier:
         self._system_prompt = build_system_prompt(self.threshold)
         self._schema = build_response_schema()
         self.last_usage: dict | None = None
+        #: Every call this classifier made, for the import report.
+        self.ledger = UsageLedger()
         # Checked once per classifier, not per batch, to keep the log quiet.
         self._cache_checked = False
 
@@ -141,6 +145,7 @@ class ClaudeClassifier:
     async def _classify_batch_once(
         self, batch: Sequence[ClassificationRequest]
     ) -> list[ClassificationResult]:
+        started = time.monotonic()
         response = await self.client.messages.create(
             model=self.model,
             max_tokens=min(8000, 200 * len(batch) + 1000),
@@ -150,14 +155,39 @@ class ClaudeClassifier:
         )
 
         usage = response.usage
+        call = self.ledger.record(
+            CallRecord(
+                model=self.model,
+                batch_size=len(batch),
+                duration_seconds=time.monotonic() - started,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cache_creation_input_tokens=getattr(
+                    usage, "cache_creation_input_tokens", 0
+                )
+                or 0,
+                cache_read_input_tokens=getattr(usage, "cache_read_input_tokens", 0)
+                or 0,
+            )
+        )
         self.last_usage = {
-            "input_tokens": usage.input_tokens,
-            "output_tokens": usage.output_tokens,
-            "cache_creation_input_tokens": getattr(
-                usage, "cache_creation_input_tokens", 0
-            ),
-            "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", 0),
+            "input_tokens": call.input_tokens,
+            "output_tokens": call.output_tokens,
+            "cache_creation_input_tokens": call.cache_creation_input_tokens,
+            "cache_read_input_tokens": call.cache_read_input_tokens,
         }
+        logger.info(
+            "%s: %s merchants in %.2fs — in=%s cache_write=%s cache_read=%s "
+            "out=%s cost=%s",
+            self.model,
+            call.batch_size,
+            call.duration_seconds,
+            call.input_tokens,
+            call.cache_creation_input_tokens,
+            call.cache_read_input_tokens,
+            call.output_tokens,
+            f"${call.cost:.5f}" if call.cost is not None else "unknown",
+        )
 
         if not self._cache_checked:
             self._cache_checked = True

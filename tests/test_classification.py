@@ -27,7 +27,11 @@ from app.classification.prompt import (
     render_examples,
     render_hierarchy,
 )
-from app.classification.service import ClassificationService, apply_refund_rule
+from app.classification.service import (
+    ClassificationService,
+    apply_refund_rule,
+    report_lines,
+)
 from app.models import SOURCE_FALLBACK, SOURCE_LLM, SOURCE_USER
 
 
@@ -490,3 +494,156 @@ def test_one_merchant_seen_many_times_is_asked_about_once(monkeypatch):
     assert len(result.classifications) == 3
     assert {c.minor for c in result.classifications} == {"Groceries"}
     assert result.deduplicated == 2
+
+
+# --- Escalation --------------------------------------------------------------
+
+
+def test_an_injected_classifier_never_grows_a_real_one_behind_it(monkeypatch):
+    """
+    A caller that supplies its own classifier is controlling API access
+    deliberately. Building a second, real client for the escalation pass would
+    put live calls into the test suite — which is exactly how this was found.
+    """
+
+    def explode(*args, **kwargs):
+        raise AssertionError("a real classifier was constructed")
+
+    monkeypatch.setattr(service_module, "ClaudeClassifier", explode)
+
+    stub = StubClassifier(results=[ClassificationResult("1", "3.1", 0.2, "unsure")])
+    service = ClassificationService(classifier=stub)
+    result = run(service.classify([make_transaction("1", " A SHOP ")]))
+
+    assert service._get_escalation_classifier() is None
+    assert result.escalated == 0
+    assert result.classifications[0].needs_review
+
+
+def test_escalation_re_asks_only_what_fell_short():
+    """
+    A code that does not exist will not start existing on a second reading,
+    and a failed batch has already had its retries. Only genuine uncertainty
+    is worth a stronger model.
+    """
+    weak = StubClassifier(
+        results=[
+            ClassificationResult("1", "3.1", 0.4, "unsure"),
+            ClassificationResult("2", "3.1", 0.95),
+            ClassificationResult("3", "99.9", 0.99),
+        ]
+    )
+    strong = StubClassifier(
+        results=[ClassificationResult("1", "3.1", 0.93)], model="strong-model"
+    )
+    transactions = [
+        make_transaction("1", " UNSURE SHOP "),
+        make_transaction("2", " CLEAR SHOP "),
+        make_transaction("3", " BOGUS SHOP "),
+    ]
+    result = run(
+        ClassificationService(classifier=weak, escalation_classifier=strong).classify(
+            transactions, use_cache=False
+        )
+    )
+
+    assert result.escalated == 1, "only the unsure merchant should be re-asked"
+    assert [r.text for r in strong.seen] == ["UNSURE SHOP"]
+    assert result.escalation_resolved == 1
+
+    by_id = {c.transaction_id: c for c in result.classifications}
+    assert by_id["1"].minor == "Groceries"
+    assert by_id["1"].confidence == 0.93
+    assert by_id["3"].needs_review, "an invalid code stays in review"
+
+
+def test_escalation_that_stays_unsure_leaves_the_first_answer_alone():
+    """
+    Otherwise the reason a person reads in the review queue would be the
+    second model's, which says nothing the first one did not.
+    """
+    weak = StubClassifier(
+        results=[ClassificationResult("1", "3.1", 0.4, "first doubt")]
+    )
+    strong = StubClassifier(
+        results=[ClassificationResult("1", "3.1", 0.5, "still unsure")],
+        model="strong-model",
+    )
+    result = run(
+        ClassificationService(classifier=weak, escalation_classifier=strong).classify(
+            [make_transaction("1", " A SHOP ")], use_cache=False
+        )
+    )
+
+    assert result.escalated == 1
+    assert result.escalation_resolved == 0
+    assert "first doubt" in result.classifications[0].reason
+
+
+def test_escalation_can_be_switched_off():
+    weak = StubClassifier(results=[ClassificationResult("1", "3.1", 0.2, "x")])
+    strong = StubClassifier(model="strong-model")
+    result = run(
+        ClassificationService(
+            classifier=weak, escalation_classifier=strong, escalate=False
+        ).classify([make_transaction("1", " A SHOP ")], use_cache=False)
+    )
+    assert result.escalated == 0
+    assert strong.seen == []
+
+
+def test_an_escalated_result_is_cached_under_the_stronger_model():
+    """model_version has to name the model that actually decided."""
+    remembered = []
+
+    async def remember(name, major, minor, source, **kwargs):
+        remembered.append((name, kwargs.get("model_version")))
+
+    weak = StubClassifier(results=[ClassificationResult("1", "3.1", 0.4, "x")])
+    strong = StubClassifier(
+        results=[ClassificationResult("1", "3.1", 0.95)], model="strong-model"
+    )
+    service = ClassificationService(classifier=weak, escalation_classifier=strong)
+    service_module.remember_merchant = remember
+    try:
+        run(service.classify([make_transaction("1", " A SHOP ")], use_cache=False))
+    finally:
+        pass
+
+    assert remembered == [("A SHOP", "strong-model")]
+
+
+# --- The import report -------------------------------------------------------
+
+
+def test_the_report_counts_review_from_the_result_not_from_the_calls():
+    """
+    Escalation validates every unsure merchant a second time, so the per-call
+    counters double up. The line a person reads has to be the finished state.
+    """
+    weak = StubClassifier(results=[ClassificationResult("1", "3.1", 0.4, "x")])
+    strong = StubClassifier(
+        results=[ClassificationResult("1", "3.1", 0.5, "still unsure")],
+        model="strong-model",
+    )
+    result = run(
+        ClassificationService(classifier=weak, escalation_classifier=strong).classify(
+            [make_transaction("1", " A SHOP ")], use_cache=False
+        )
+    )
+
+    assert result.below_threshold == 2, "both passes judged it unsure"
+    report = "\n".join(report_lines(result, 1))
+    assert "in review            : 1" in report
+
+
+def test_the_report_survives_a_run_that_made_no_api_calls():
+    stub = StubClassifier()
+    transaction = make_transaction(
+        "1",
+        "PayPal (Europe) Buchungstext: PP.5189.PP . , Ihr Ei nkauf bei Ref. A1",
+    )
+    result = run(ClassificationService(classifier=stub).classify([transaction]))
+    report = "\n".join(report_lines(result, 1))
+    assert "merchants asked      : 0" in report
+    assert "PayPal fallback    : 1" in report

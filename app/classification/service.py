@@ -21,7 +21,7 @@ nobody chose.
 """
 
 from collections import defaultdict
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Iterable, Sequence
 
@@ -91,6 +91,9 @@ class ClassificationRun:
     below_threshold: int = 0
     invalid_codes: int = 0
     deduplicated: int = 0
+    escalated: int = 0
+    escalation_resolved: int = 0
+    ledgers: list = field(default_factory=list)
     refunds: int = 0
     failed: int = 0
     usage: dict | None = None
@@ -210,18 +213,52 @@ class ClassificationService:
         self,
         classifier: ClaudeClassifier | None = None,
         threshold: float | None = None,
+        escalation_classifier: "ClaudeClassifier | None" = None,
+        escalate: bool | None = None,
     ) -> None:
         self._classifier = classifier
+        self._injected_primary = classifier is not None
+        self._escalation_classifier = escalation_classifier
         self.threshold = (
             threshold
             if threshold is not None
             else settings.classification_confidence_threshold
+        )
+        self.escalate = (
+            escalate
+            if escalate is not None
+            else bool(settings.classification_escalation_model)
         )
 
     def _get_classifier(self) -> ClaudeClassifier:
         if self._classifier is None:
             self._classifier = ClaudeClassifier()
         return self._classifier
+
+    def _get_escalation_classifier(self) -> ClaudeClassifier | None:
+        """
+        The stronger model used for a second look, or ``None`` if switched off.
+
+        A separate classifier rather than a parameter, because it keeps its
+        own prompt cache and its own ledger — the escalation pass is small and
+        its cost should be visible on its own.
+
+        One is only built here when this service also built the primary
+        classifier. A caller that injected its own is controlling API access
+        deliberately — a test, an evaluation pinned to one model — and must
+        not have a second, real client appear behind its back.
+        """
+        if not self.escalate:
+            return None
+        if self._escalation_classifier is not None:
+            return self._escalation_classifier
+        if self._injected_primary:
+            return None
+        model = settings.classification_escalation_model
+        if not model or model == self._get_classifier().model:
+            return None
+        self._escalation_classifier = ClaudeClassifier(model=model)
+        return self._escalation_classifier
 
     async def classify(
         self, transactions: Sequence[Transaction], use_cache: bool = True
@@ -323,6 +360,11 @@ class ClassificationService:
 
         if to_ask:
             await self._ask_api(to_ask, by_key, merchants, run)
+            # Step 5: everything the first model was unsure about gets a
+            # second look from a stronger one, under the same rules. It runs
+            # as its own pass rather than a retry inside the batch so its cost
+            # and its effect stay separately visible.
+            await self._escalate(to_ask, by_key, merchants, run)
 
         # Applied once, at the end, so it covers cache hits, API answers and
         # the PayPal fallback alike rather than being repeated per branch.
@@ -337,6 +379,11 @@ class ClassificationService:
                 run.refunds += 1
             refiled.append(adjusted)
         run.classifications = refiled
+
+        for classifier in (self._classifier, self._escalation_classifier):
+            ledger = getattr(classifier, "ledger", None)
+            if ledger is not None and ledger.calls:
+                run.ledgers.append(ledger)
 
         logger.info("Classification run: %s", run.summary())
         return run
@@ -397,8 +444,78 @@ class ClassificationService:
                         )
                     )
 
+    async def _escalate(
+        self,
+        requests: list[ClassificationRequest],
+        by_key: dict[str, list[Transaction]],
+        merchants: dict[str, str],
+        run: ClassificationRun,
+    ) -> None:
+        """
+        Re-ask the stronger model about everything that fell short.
+
+        Only merchants that ended in review are sent, and only because they
+        were unsure rather than invalid — a code that does not exist will not
+        become one on a second reading, and a failed batch has already had its
+        retries.
+        """
+        classifier = self._get_escalation_classifier()
+        if classifier is None:
+            return
+
+        unsure = {
+            classification.transaction_id
+            for classification in run.classifications
+            if classification.needs_review
+            and classification.source == SOURCE_LLM
+            and "below" in classification.reason
+        }
+        if not unsure:
+            return
+
+        by_transaction = {
+            str(transaction.id): key
+            for key, group in by_key.items()
+            for transaction in group
+        }
+        keys = {by_transaction[tid] for tid in unsure if tid in by_transaction}
+        retry = [request for request in requests if request.id in keys]
+        if not retry:
+            return
+
+        logger.info("Escalating %s merchants to %s", len(retry), classifier.model)
+        run.escalated += len(retry)
+
+        results, _ = await classifier.classify(retry)
+        improved: dict[str, Classification] = {}
+        for result in results:
+            group = by_key.get(result.id, [])
+            if not group:
+                continue
+            merchant = merchants.get(str(group[0].id), "")
+            decided = await self._accept(result, merchant, run, classifier=classifier)
+            if decided.needs_review:
+                # No better than the first answer; leave the original in
+                # place so the reason the user reads is the first one.
+                continue
+            run.escalation_resolved += 1
+            for transaction in group:
+                improved[str(transaction.id)] = replace(
+                    decided, transaction_id=str(transaction.id)
+                )
+
+        if improved:
+            run.classifications = [
+                improved.get(classification.transaction_id, classification)
+                for classification in run.classifications
+            ]
+
     async def _accept(
-        self, result: ClassificationResult, merchant: str, run: ClassificationRun
+        self,
+        result: ClassificationResult,
+        merchant: str,
+        run: ClassificationRun,
+        classifier: ClaudeClassifier | None = None,
     ) -> Classification:
         """Validate one model result and decide whether to keep it."""
         if not is_valid_code(result.code):
@@ -434,7 +551,7 @@ class ClassificationService:
                 SOURCE_LLM,
                 confidence=result.confidence,
                 reason=result.reason or None,
-                model_version=self._get_classifier().model,
+                model_version=(classifier or self._get_classifier()).model,
             )
 
         return Classification(
@@ -509,3 +626,48 @@ async def apply(
         await transaction.save()
         written += 1
     return written
+
+
+def report_lines(run: ClassificationRun, transaction_count: int) -> list[str]:
+    """
+    The per-import summary.
+
+    Every number here answers a question the pipeline was built to answer: how
+    many transactions collapsed onto how many merchants, how many of those the
+    cache already knew, and what the rest cost.
+    """
+    asked = run.api_calls
+    # Counted from the finished classifications rather than from the number of
+    # results inspected: escalation puts every unsure merchant through
+    # validation a second time, so the per-call counters double up.
+    in_review = sum(1 for c in run.classifications if c.needs_review)
+    lines = [
+        f"transactions         : {transaction_count}",
+        f"  from merchant cache: {run.cache_hits}",
+        f"  deduplicated       : {run.deduplicated}",
+        f"  PayPal fallback    : {run.fallbacks}",
+        f"merchants asked      : {asked}",
+        f"  escalated          : {run.escalated} ({run.escalation_resolved} resolved)",
+        f"in review            : {in_review}",
+        f"  unsure judgements  : {run.below_threshold}",
+        f"  invalid codes      : {run.invalid_codes}",
+        f"  failed             : {run.failed}",
+        f"re-filed as refunds  : {run.refunds}",
+    ]
+
+    answered = run.cache_hits + run.deduplicated + run.fallbacks
+    total = answered + asked
+    if total:
+        lines.append(
+            f"merchant cache saved : {answered / total * 100:.0f}% of possible calls"
+        )
+
+    for ledger in run.ledgers:
+        models = ", ".join(sorted({call.model for call in ledger.calls}))
+        lines.append(f"--- {models} ---")
+        lines.extend(f"  {line}" for line in ledger.summary_lines())
+
+    costs = [ledger.total_cost for ledger in run.ledgers]
+    if costs and all(cost is not None for cost in costs):
+        lines.append(f"estimated total cost : ${sum(costs):.4f}")
+    return lines

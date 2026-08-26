@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     # so there is no client bundle it could leak into.
     anthropic_api_key: str | None = None
     classification_model: str = "claude-haiku-4-5"
+    #: A second pass for everything the first model was unsure about. Set to
+    #: an empty string to switch escalation off. It also gets prompt caching
+    #: for free: the cacheable prefix minimum is 4096 tokens on Haiku 4.5 and
+    #: 1024 on Sonnet 5, and the system block sits between the two.
+    classification_escalation_model: str = "claude-sonnet-5"
     #: Below this, a result goes to review instead of forcing a category.
     classification_confidence_threshold: float = 0.7
     #: Transactions per API request. Larger batches amortise the cached system
