@@ -1,12 +1,18 @@
 """
 Business logic services for categorization and analytics.
 """
+
 import asyncio
 from datetime import datetime
 from typing import Optional
 
+from beanie import PydanticObjectId
+
+from app.categories import MINOR_NEEDS_REVIEW, flow_type_for, is_valid_pair
 from app.config import get_logger
-from app.models import ComdirectBalanceSnapshot, Transaction
+from app.models import SOURCE_USER, ComdirectBalanceSnapshot, Transaction
+from app.normalization import normalize_merchant
+from app.recurrence import find_recurring, recurring_transaction_ids
 from app.utils import (
     generate_all_months_in_year,
     generate_month_range,
@@ -221,19 +227,15 @@ class ChartDataService:
 
         # Store unfiltered transactions for determining month range
         unfiltered_transactions = [
-            t
-            for t in all_transactions
-            if not should_exclude_transaction(t.minor_category)
+            t for t in all_transactions if not should_exclude_transaction(t)
         ]
 
         # Filter by year if provided
         if year:
             transactions = [t for t in transactions if t.date.year == year]
 
-        # Exclude Internal transfers
-        transactions = [
-            t for t in transactions if not should_exclude_transaction(t.minor_category)
-        ]
+        # Transfers move money without spending it.
+        transactions = [t for t in transactions if not should_exclude_transaction(t)]
 
         # Get available categories
         available_categories = set()
@@ -291,7 +293,7 @@ class ChartDataService:
     async def get_cashflow_data(year: Optional[int] = None) -> dict:
         """
         Get net cashflow data aggregated by month.
-        Excludes Uncategorized and Transfers Internal transactions.
+        Excludes transfers, which move money without earning or spending it.
 
         Args:
             year: Filter by year (optional, defaults to all years)
@@ -304,20 +306,16 @@ class ChartDataService:
 
         # Store unfiltered transactions for determining month range
         unfiltered_transactions = [
-            t
-            for t in all_transactions
-            if not should_exclude_transaction(t.minor_category)
+            t for t in all_transactions if not should_exclude_transaction(t)
         ]
 
         # Filter by year if provided
         if year:
             all_transactions = [t for t in all_transactions if t.date.year == year]
 
-        # Exclude Uncategorized and Internal transfers
+        # Transfers move money without earning or spending it.
         all_transactions = [
-            t
-            for t in all_transactions
-            if not should_exclude_transaction(t.minor_category)
+            t for t in all_transactions if not should_exclude_transaction(t)
         ]
 
         # Group by month and sum amounts
@@ -414,3 +412,166 @@ class CategorizationService:
         except Exception as e:
             logger.error(f"Failed to recompute categories: {e}")
             raise
+
+
+class ReviewService:
+    """The queue of transactions the classifier would not decide."""
+
+    @staticmethod
+    async def queue(limit: int = 100, skip: int = 0) -> list[Transaction]:
+        """Transactions awaiting a human decision, least confident first."""
+        return await (
+            Transaction.find(Transaction.minor_category == MINOR_NEEDS_REVIEW)
+            .sort("confidence", "-date")
+            .skip(max(0, skip))
+            .limit(limit)
+            .to_list()
+        )
+
+    @staticmethod
+    async def count() -> int:
+        return await Transaction.find(
+            Transaction.minor_category == MINOR_NEEDS_REVIEW
+        ).count()
+
+    @staticmethod
+    async def correct(
+        transaction_id: str, major: str, minor: str
+    ) -> tuple[Transaction, bool]:
+        """
+        File a transaction by hand and teach the merchant cache.
+
+        The correction is the point: it settles this transaction *and* every
+        future one from the same merchant. The cache entry is written as
+        ``user``, which the classifier is not allowed to overwrite.
+
+        Returns:
+            The updated transaction and whether the merchant cache was
+            written — it is not, when the booking line holds no merchant to
+            key on.
+        """
+        from app.classification.service import remember_merchant
+
+        transaction = await Transaction.get(PydanticObjectId(transaction_id))
+        if transaction is None:
+            raise ValueError(f"No transaction {transaction_id}")
+
+        # A hand correction is not coerced. Silently turning an invalid pair
+        # into Needs Review would file the transaction as unreviewed *and*
+        # teach the merchant cache that answer as if a person had chosen it —
+        # a malformed form post would then poison every future transaction
+        # from that merchant.
+        if not is_valid_pair(major, minor):
+            raise ValueError(f"{major!r} / {minor!r} is not a category")
+
+        transaction.major_category = major
+        transaction.minor_category = minor
+        transaction.flow_type = flow_type_for(major)
+        transaction.confidence = 1.0
+        transaction.reason = "Categorised by hand."
+        transaction.classification_source = SOURCE_USER
+        await transaction.save()
+
+        merchant = normalize_merchant(transaction.booking_text, transaction.process)
+        if merchant:
+            await remember_merchant(merchant, major, minor, SOURCE_USER)
+        return transaction, bool(merchant)
+
+
+class RecurringService:
+    """Payments that repeat on a schedule, replacing the Subscriptions category."""
+
+    @staticmethod
+    async def detect_and_store() -> list:
+        """
+        Re-run detection over the whole history and mark the transactions.
+
+        Recomputed rather than updated incrementally: a new charge can turn
+        two earlier ones into a schedule, and can end one that has stopped.
+        """
+        transactions = await Transaction.find_all().to_list()
+        runs = find_recurring(transactions)
+        recurring = recurring_transaction_ids(runs)
+
+        for transaction in transactions:
+            should_be = str(transaction.id) in recurring
+            if transaction.is_recurring != should_be:
+                transaction.is_recurring = should_be
+                await transaction.save()
+
+        logger.info(
+            "Recurring detection: %s schedules covering %s transactions",
+            len(runs),
+            len(recurring),
+        )
+        return runs
+
+    @staticmethod
+    async def overview() -> dict:
+        """
+        The recurring payments, grouped by schedule, with a monthly total.
+
+        Quarterly and yearly charges are shown at their monthly equivalent so
+        the total means something: a 90 EUR annual insurance is 7.50 a month
+        next to a 4.99 subscription.
+        """
+        transactions = await Transaction.find_all().to_list()
+        runs = find_recurring(transactions)
+        per_month = {"monthly": 1.0, "quarterly": 3.0, "yearly": 12.0}
+        by_id = {str(t.id): t for t in transactions}
+
+        items = []
+        for run in runs:
+            latest = max(
+                (by_id[tid] for tid in run.transaction_ids if tid in by_id),
+                key=lambda t: t.date,
+                default=None,
+            )
+            if latest is None:
+                continue
+            items.append(
+                {
+                    "merchant": run.merchant,
+                    "period": run.period,
+                    "occurrences": run.occurrences,
+                    "amount": round(run.median_amount, 2),
+                    "monthly_equivalent": round(
+                        run.median_amount / per_month[run.period], 2
+                    ),
+                    "major": latest.major_category,
+                    "minor": latest.minor_category,
+                    "flow_type": latest.flow_type,
+                    "last_seen": latest.date.strftime("%Y-%m-%d"),
+                }
+            )
+
+        # Transfers move money without earning or spending it, so they stay
+        # out of both totals — a monthly savings plan is not an expense and a
+        # standing order between own accounts is not income. They are still
+        # listed, because a 500-a-month transfer is worth seeing.
+        spending = [i for i in items if i["flow_type"] != "transfer"]
+        transfers = [i for i in items if i["flow_type"] == "transfer"]
+        return {
+            "items": items,
+            "monthly_expense": round(
+                sum(
+                    i["monthly_equivalent"]
+                    for i in spending
+                    if i["monthly_equivalent"] < 0
+                ),
+                2,
+            ),
+            "monthly_income": round(
+                sum(
+                    i["monthly_equivalent"]
+                    for i in spending
+                    if i["monthly_equivalent"] > 0
+                ),
+                2,
+            ),
+            "monthly_transfer": round(
+                sum(i["monthly_equivalent"] for i in transfers), 2
+            ),
+            "transfer_count": len(transfers),
+            "count": len(items),
+        }

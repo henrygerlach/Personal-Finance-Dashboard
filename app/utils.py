@@ -1,12 +1,17 @@
 """
 Utility functions and helpers.
 """
+
 from collections import defaultdict
 from datetime import date, datetime
 from typing import DefaultDict
 
 # Constants for category filtering
 INTERNAL_CATEGORIES = {"Uncategorized", "Internal"}
+
+# Transfers move money without earning or spending it, so they must stay out of
+# every expense total, expense chart and monthly comparison.
+TRANSFER_FLOW = "transfer"
 
 # Time constants
 MONTHS_PER_YEAR = 12
@@ -63,17 +68,33 @@ def extract_month_key(date_obj: datetime) -> str:
     return date_obj.strftime("%Y-%m")
 
 
-def should_exclude_transaction(minor_category: str) -> bool:
+def should_exclude_transaction(transaction) -> bool:
     """
-    Check if a transaction should be excluded from analysis.
+    Whether a transaction must stay out of income and expense analysis.
+
+    Decided by ``flow_type``, which is derived from the major category rather
+    than guessed. The previous version matched two hard-coded minor category
+    names, and that let real money through: transfers to other people counted
+    as income, and securities purchases and cash withdrawals counted as
+    spending — about 8,800 EUR and 12,700 EUR respectively in the live data.
+
+    A transaction from before the taxonomy migration has no flow type. Those
+    fall back to the old name check so the dashboard keeps working on a
+    half-migrated database.
 
     Args:
-        minor_category: Transaction's minor category
-
-    Returns:
-        True if transaction should be excluded, False otherwise
+        transaction: A transaction, or a bare minor-category name for callers
+            that only have that.
     """
-    return minor_category in INTERNAL_CATEGORIES
+    if isinstance(transaction, str):
+        return transaction in INTERNAL_CATEGORIES
+
+    flow_type = getattr(transaction, "flow_type", None)
+    if flow_type:
+        return flow_type == TRANSFER_FLOW
+
+    minor = getattr(transaction, "minor_category", None)
+    return minor in INTERNAL_CATEGORIES
 
 
 def group_by_month_and_category(

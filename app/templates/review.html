@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero">
+  <div class="hero-text">
+    <span class="eyebrow">Low confidence</span>
+    <h1>Needs review</h1>
+    <p class="subtitle">
+      The classifier would not decide these. Filing one here also teaches the
+      merchant, so every future transaction from the same shop is filed the
+      same way — without asking the API again.
+    </p>
+  </div>
+  {% if review_count %}
+  <div class="hero-stat">
+    <span class="hero-stat-value">{{ review_count }}</span>
+    <span class="label">awaiting a decision</span>
+  </div>
+  {% endif %}
+</section>
+
+{% if transactions %}
+<section class="section-block">
+  <div class="review-list">
+    {% for transaction in transactions %}
+    <article class="review-item">
+      <div class="review-facts">
+        <span class="review-date">{{ transaction.date.strftime("%d %b %Y") }}</span>
+        <span class="review-amount" data-money="{{ transaction.amount }}">
+          {{ "%.2f"|format(transaction.amount) }} €
+        </span>
+        {% if transaction.confidence is not none %}
+        <span class="review-confidence">
+          confidence {{ "%.2f"|format(transaction.confidence) }}
+        </span>
+        {% endif %}
+      </div>
+      <p class="review-booking">{{ transaction.booking_text }}</p>
+      {% if transaction.reason %}
+      <p class="review-reason">{{ transaction.reason }}</p>
+      {% endif %}
+
+      <form class="review-form" method="post"
+            action="/review/{{ transaction.id }}">
+        <select name="major_category" required
+                data-role="major" aria-label="Major category">
+          <option value="" disabled selected>Major category</option>
+          {% for major in categories.keys() %}
+          <option value="{{ major }}">{{ major }}</option>
+          {% endfor %}
+        </select>
+        <select name="minor_category" required disabled
+                data-role="minor" aria-label="Minor category">
+          <option value="" disabled selected>Minor category</option>
+        </select>
+        <button type="submit" class="primary-button">Save</button>
+      </form>
+    </article>
+    {% endfor %}
+  </div>
+
+  {% if review_count > transactions|length %}
+  <div class="form-actions">
+    {% if skip %}
+    <a class="ghost-button" href="/review?skip={{ [skip - 50, 0]|max }}">Previous</a>
+    {% endif %}
+    <a class="ghost-button" href="/review?skip={{ skip + 50 }}">Next 50</a>
+  </div>
+  {% endif %}
+</section>
+{% else %}
+<div class="panel-outline is-centered">
+  <p class="panel-title">Nothing to review</p>
+  <p class="panel-text">
+    Every transaction has a category the classifier was confident about.
+  </p>
+  <a class="primary-button" href="/">Back to the dashboard</a>
+</div>
+{% endif %}
+
+<script>
+  // The minor list depends on the major, and the hierarchy is already on the
+  // page — the same one the backend validates against.
+  (function () {
+    const hierarchy = window.CATEGORY_HIERARCHY || {};
+    document.querySelectorAll('.review-form').forEach(function (form) {
+      const major = form.querySelector('[data-role="major"]');
+      const minor = form.querySelector('[data-role="minor"]');
+      major.addEventListener('change', function () {
+        const minors = hierarchy[this.value] || [];
+        minor.innerHTML =
+          '<option value="" disabled selected>Minor category</option>';
+        minors.forEach(function (name) {
+          const option = document.createElement('option');
+          option.value = name;
+          option.textContent = name;
+          minor.appendChild(option);
+        });
+        minor.disabled = minors.length === 0;
+      });
+    });
+  })();
+</script>
+{% endblock %}

@@ -9,6 +9,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Upload
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from app.categories import CATEGORY_HIERARCHY as NEW_CATEGORY_HIERARCHY
 from app.categorizer import Categorizer
 from app.classification.client import ClassificationError
 from app.classification.comparison import write_comparison
@@ -21,6 +22,8 @@ from app.services import (
     CategorizationService,
     ChartDataService,
     ComdirectBalanceService,
+    RecurringService,
+    ReviewService,
 )
 
 logger = get_logger(__name__)
@@ -30,7 +33,7 @@ templates = Jinja2Templates(directory="app/templates")
 
 # Exposed to every template: the frontend derives its category colour palette
 # from this hierarchy instead of maintaining a parallel list of hex values.
-templates.env.globals["CATEGORY_HIERARCHY"] = CATEGORY_HIERARCHY
+templates.env.globals["CATEGORY_HIERARCHY"] = NEW_CATEGORY_HIERARCHY
 
 
 def get_templates() -> Jinja2Templates:
@@ -105,6 +108,87 @@ async def categorize_page(
             "skip": skip,
         },
     )
+
+
+@router.get("/review", response_class=HTMLResponse)
+async def review_page(
+    request: Request,
+    skip: Annotated[int, Query(ge=0)] = 0,
+) -> HTMLResponse:
+    """
+    Transactions the classifier would not decide, least confident first.
+
+    Correcting one here settles that transaction and teaches the merchant
+    cache, so every future transaction from the same merchant is filed the
+    same way without an API call.
+    """
+    templates = get_templates()
+    transactions = await ReviewService.queue(limit=50, skip=skip)
+    return templates.TemplateResponse(
+        "review.html",
+        {
+            "request": request,
+            "title": "Needs Review",
+            "active_path": "/review",
+            "transactions": transactions,
+            "review_count": await ReviewService.count(),
+            "categories": NEW_CATEGORY_HIERARCHY,
+            "skip": skip,
+            "uncategorized_count": (
+                await CategorizationService.get_uncategorized_count()
+            ),
+        },
+    )
+
+
+@router.post("/review/{transaction_id}")
+async def correct_category(
+    transaction_id: str,
+    major_category: str = Form(...),
+    minor_category: str = Form(...),
+) -> RedirectResponse:
+    """Assign a category by hand and record it for the merchant."""
+    try:
+        await ReviewService.correct(transaction_id, major_category, minor_category)
+    except ValueError as error:
+        # Covers both an unknown transaction and a category pair that does not
+        # exist; either way there is nothing to save.
+        raise HTTPException(status_code=422, detail=str(error))
+    return RedirectResponse(url="/review", status_code=303)
+
+
+@router.get("/recurring", response_class=HTMLResponse)
+async def recurring_page(request: Request) -> HTMLResponse:
+    """
+    Payments that repeat on a schedule.
+
+    Replaces the old Subscriptions category: whether a payment recurs is a
+    property of the history, not of what the merchant sells.
+    """
+    templates = get_templates()
+    return templates.TemplateResponse(
+        "recurring.html",
+        {
+            "request": request,
+            "title": "Recurring",
+            "active_path": "/recurring",
+            "overview": await RecurringService.overview(),
+            "uncategorized_count": (
+                await CategorizationService.get_uncategorized_count()
+            ),
+        },
+    )
+
+
+@router.post("/api/recurring/detect")
+async def detect_recurring() -> dict:
+    """Re-run detection over the whole history and store the result."""
+    runs = await RecurringService.detect_and_store()
+    return {
+        "status": "success",
+        "schedules": len(runs),
+        "transactions": sum(run.occurrences for run in runs),
+    }
 
 
 @router.get("/rules", response_class=HTMLResponse)
