@@ -35,7 +35,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.categories import code_for, flow_type_for  # noqa: E402
+from app.categories import code_for, flow_type_for, is_valid_pair  # noqa: E402
 from app.database import db_manager  # noqa: E402
 from app.legacy_mapping import (  # noqa: E402
     invalid_targets,
@@ -57,6 +57,11 @@ from app.normalization import (  # noqa: E402
 
 # Defaults the legacy model used when nothing was assigned.
 LEGACY_DEFAULT = ("Other", "Uncategorized")
+
+#: How decisive a merchant's hand-made categories must be before the
+#: majority is cached despite the disagreement.
+MAJORITY_SHARE = 2 / 3
+MAJORITY_MIN_TRANSACTIONS = 3
 
 
 def _legacy_pair_of(transaction: Transaction) -> tuple[str, str]:
@@ -91,15 +96,26 @@ async def migrate(dry_run: bool) -> tuple[int, list]:
 
     changes: list[tuple[Transaction, tuple[str, str], bool]] = []
     unmapped: Counter = Counter()
+    already_new = 0
 
     for transaction in pending:
         legacy = _legacy_pair_of(transaction)
+        # A transaction imported after the switch-over was categorised by the
+        # classifier and is already in the new taxonomy. It has no legacy
+        # category and needs no migration — without this it would be reported
+        # as an unmapped legacy pair, which is alarming and wrong.
+        if is_valid_pair(*legacy):
+            already_new += 1
+            continue
         try:
             new_pair, provisional = map_pair(*legacy)
         except KeyError:
             unmapped[legacy] += 1
             continue
         changes.append((transaction, new_pair, provisional))
+
+    if already_new:
+        print(f"already in the new taxonomy: {already_new} (skipped)")
 
     # --- Report -------------------------------------------------------------
     moves: Counter = Counter()
@@ -203,13 +219,31 @@ async def fill_merchant_cache(dry_run: bool, planned: list | None = None) -> Non
         display.setdefault(key, name)
         by_merchant[key][pair] += 1
 
-    agreed = {m: c for m, c in by_merchant.items() if len(c) == 1}
-    conflicted = {m: c for m, c in by_merchant.items() if len(c) > 1}
+    # A merchant whose transactions disagree is not automatically unusable.
+    # Every conflict in the live data comes from one mapping decision — the
+    # legacy "Transfers / External" bucket maps to Person to Person, and it
+    # contains occasional payments from people who otherwise send maintenance
+    # or rent. The hand-made majority is far better evidence than anything a
+    # classifier could produce, and leaving these uncached let the classifier
+    # overwrite 53 hand-made decisions with one guess.
+    #
+    # A clear majority is taken; a genuine split is still left alone.
+    agreed: dict[str, Counter] = {}
+    conflicted: dict[str, Counter] = {}
+    for merchant, counter in by_merchant.items():
+        total = sum(counter.values())
+        (_, top_count) = counter.most_common(1)[0]
+        if len(counter) == 1:
+            agreed[merchant] = counter
+        elif total >= MAJORITY_MIN_TRANSACTIONS and top_count / total >= MAJORITY_SHARE:
+            agreed[merchant] = counter
+        else:
+            conflicted[merchant] = counter
 
     print()
     print(f"merchants seen      : {len(by_merchant)}")
-    print(f"unambiguous         : {len(agreed)}")
-    print(f"conflicting         : {len(conflicted)} (skipped, left to the classifier)")
+    print(f"cacheable           : {len(agreed)}")
+    print(f"genuinely split     : {len(conflicted)} (skipped, left to the classifier)")
 
     if conflicted:
         print()

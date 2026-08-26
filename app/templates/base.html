@@ -22,14 +22,24 @@
         Comdirect Dashboard
       </a>
       <nav class="nav" aria-label="Primary">
+        {#
+          The rule pages are still reachable, but they are no longer part of
+          the daily path: the classifier categorises on import and Review is
+          where a decision gets made. Categorize and Rules only do anything
+          while RULES_ENABLED is true.
+        #}
         {% set nav_items = [
           ("Dashboard", "/"),
           ("Upload", "/upload"),
           ("Review", "/review"),
-          ("Recurring", "/recurring"),
-          ("Categorize", "/categorize"),
-          ("Rules", "/rules")
+          ("Recurring", "/recurring")
         ] %}
+        {% if RULES_ENABLED %}
+          {% set nav_items = nav_items + [
+            ("Categorize", "/categorize"),
+            ("Rules", "/rules")
+          ] %}
+        {% endif %}
         {% for label, href in nav_items %}
           <a
             class="nav-link{% if active_path == href %} active{% endif %}"
@@ -37,7 +47,9 @@
             {% if active_path == href %}aria-current="page"{% endif %}
           >
             {{ label }}
-            {%- if href == "/categorize" and uncategorized_count %}
+            {%- if href == "/review" and review_count %}
+            <span class="nav-badge">{{ review_count }}</span>
+            {%- elif href == "/categorize" and uncategorized_count %}
             <span class="nav-badge">{{ uncategorized_count }}</span>
             {%- endif %}
           </a>
