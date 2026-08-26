@@ -208,3 +208,67 @@ def flow_type_for(major: str) -> FlowType:
 def is_transfer(major: str) -> bool:
     """Whether transactions of this major must stay out of income and expense totals."""
     return flow_type_for(major) == "transfer"
+
+
+# --- Category codes ----------------------------------------------------------
+#
+# The classifier answers with a code like "7.1" rather than two category names.
+# Two reasons, in order of importance:
+#
+# A code names a *pair*, so an impossible combination cannot be expressed. Two
+# separate name fields can each be valid while the pair is not — the model
+# returned "Shopping / Furniture & Household Goods" on the very first live
+# test, where the minor exists but sits under Housing. A code has no way to
+# say that.
+#
+# Output tokens cost several times input tokens, and the category name is the
+# bulk of each answer. That saving is real but small at this volume; it is a
+# side benefit, not the reason.
+#
+# Codes are *derived* from the hierarchy's order, never maintained by hand, so
+# there is one place to change a category. The consequence is that reordering
+# CATEGORY_HIERARCHY renumbers everything: a code is a wire format, and
+# `major`/`minor` stay the stored truth. A stored code is a convenience for
+# reading, and must never be resolved back into a category on its own.
+
+#: Pair -> code, numbered from 1 in hierarchy order.
+CODE_BY_PAIR: dict[tuple[str, str], str] = {}
+#: Code -> pair.
+PAIR_BY_CODE: dict[str, tuple[str, str]] = {}
+
+for _major_index, (_major, _minors) in enumerate(CATEGORY_HIERARCHY.items(), start=1):
+    for _minor_index, _minor in enumerate(_minors, start=1):
+        _code = f"{_major_index}.{_minor_index}"
+        CODE_BY_PAIR[(_major, _minor)] = _code
+        PAIR_BY_CODE[_code] = (_major, _minor)
+
+#: The code the review bucket carries, so callers need not look it up.
+NEEDS_REVIEW_CODE = CODE_BY_PAIR[NEEDS_REVIEW]
+
+
+def code_for(major: str, minor: str) -> str | None:
+    """The code for a pair, or ``None`` if the hierarchy does not contain it."""
+    return CODE_BY_PAIR.get((major, minor))
+
+
+def pair_for_code(code: object) -> tuple[str, str]:
+    """
+    Resolve a code into its pair, falling back to review.
+
+    A code the hierarchy does not define is not an error: the model produced
+    something that is not a category, and the transaction belongs in review
+    rather than in whichever category happens to sit nearby.
+    """
+    if isinstance(code, str) and code.strip() in PAIR_BY_CODE:
+        return PAIR_BY_CODE[code.strip()]
+    return NEEDS_REVIEW
+
+
+def is_valid_code(code: object) -> bool:
+    """Whether ``code`` names a pair in the hierarchy."""
+    return isinstance(code, str) and code.strip() in PAIR_BY_CODE
+
+
+def all_codes() -> list[str]:
+    """Every code, in hierarchy order."""
+    return list(PAIR_BY_CODE)
