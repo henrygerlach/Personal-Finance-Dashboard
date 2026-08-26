@@ -203,6 +203,13 @@
     return date.toLocaleDateString("en-US", { month: "short", year: "2-digit" });
   }
 
+  /** Day and month of an ISO date, for lists that already state the month. */
+  function formatDay(isoDate) {
+    const [year, month, day] = String(isoDate).split("-");
+    const date = new Date(Number(year), Number(month) - 1, Number(day));
+    return date.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+  }
+
   /** Unambiguous month for prose, where "Jan 23" could read as a date. */
   function formatMonthLong(month) {
     const [year, monthNum] = String(month).split("-");
@@ -243,6 +250,7 @@
     formatPercent,
     formatMonth,
     formatMonthLong,
+    formatDay,
     token,
     oklchToHex,
     prefersReducedMotion,
