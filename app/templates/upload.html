@@ -6,8 +6,10 @@
     <span class="eyebrow">Import</span>
     <h1>Upload a statement</h1>
     <p class="subtitle">
-      Comdirect CSV exports. Transactions already in the database are skipped,
-      so re-importing an overlapping export is safe.
+      Comdirect CSV exports, and PayPal activity exports — a PayPal file is
+      recognised by its header and stored as the evidence that puts the payee
+      back into truncated PayPal lines. Anything already in the database is
+      skipped, so re-importing an overlapping export is safe.
     </p>
   </div>
 </section>
@@ -112,10 +114,14 @@
 
     function summarize(data) {
       const count = Number(data.imported) || 0;
-      if (count === 0) {
-        return 'No new transactions — everything in that file was already imported.';
+      const paypal = Number(data.paypal_rows) || 0;
+      const parts = [];
+      if (count) parts.push(`${count} transaction${count === 1 ? '' : 's'}`);
+      if (paypal) parts.push(`${paypal} PayPal row${paypal === 1 ? '' : 's'}`);
+      if (!parts.length) {
+        return 'Nothing new — everything in that file was already imported.';
       }
-      return `Imported ${count} transaction${count === 1 ? '' : 's'}.`;
+      return `Imported ${parts.join(' and ')}.`;
     }
 
     function show(type, message, files) {

@@ -18,7 +18,10 @@ from app.config import get_logger, settings
 from app.constants import CATEGORY_HIERARCHY
 from app.models import SOURCE_PENDING, CategoryRule, Transaction
 from app.parser import Parser
+from app.paypal import PayPalFormatError, import_export
+from app.paypal.records import looks_like_export
 from app.services import (
+    TOP_DETAIL_TRANSACTIONS,
     CategorizationService,
     ChartDataService,
     ComdirectBalanceService,
@@ -298,6 +301,45 @@ async def get_cashflow_data(
     return await ChartDataService.get_cashflow_data(year=year)
 
 
+@router.get("/api/transaction-detail")
+async def get_transaction_detail(
+    month: Annotated[str | None, Query(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")] = None,
+    year: Annotated[int | None, Query()] = None,
+    category: Annotated[str | None, Query()] = None,
+    category_type: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=50)] = TOP_DETAIL_TRANSACTIONS,
+) -> dict:
+    """
+    Get the transactions behind one thing the dashboard drew.
+
+    Backs the drill-down popup every plot opens. A click always resolves to a
+    period and optionally a category, so one endpoint answers for all of them.
+    Both directions come back separately, because what was clicked is a net
+    sum and a refund filed under an expense category belongs to it just as
+    much as the spending does.
+
+    Query Parameters:
+        month: Month key in YYYY-MM format (optional)
+        year: Year to cover (optional; ignored when month is given, and
+            omitting both covers all of history)
+        category: Category to narrow to (optional)
+        category_type: Whether category names a major or a minor category.
+            Must match the granularity the plot is drawn at.
+        limit: How many transactions to return per direction
+
+    Returns:
+        JSON echoing the scope, with its net total and an incoming and
+        outgoing side
+    """
+    return await ChartDataService.get_transaction_detail(
+        month=month,
+        year=year,
+        category=category,
+        category_type=category_type,
+        limit=limit,
+    )
+
+
 @router.get("/api/account-balances")
 async def get_account_balances() -> dict:
     """Get cached Comdirect balances loaded during app startup."""
@@ -420,17 +462,38 @@ async def upload_csv(files: list[UploadFile] = File(...)) -> dict:
 
     # Load existing rules
     rules = await CategoryRule.find_all().to_list()
-    categorizer = Categorizer(rules=rules)
     parser = Parser(rules=rules)
 
     imported_total = 0
     file_results = []
     imported_new: list[Transaction] = []
+    paypal_rows = 0
 
     for file in files:
         try:
-            # Read and parse CSV
             contents = await file.read()
+
+            # A PayPal activity export is not a statement and holds no
+            # transactions of its own. It is evidence about statements: the
+            # payees Comdirect truncated out of its PayPal lines. Storing it
+            # here means one upload control for both, and the classifier picks
+            # the payees up on the next import. See app.paypal.
+            if looks_like_export(contents):
+                result = await import_export(contents)
+                paypal_rows += result.added
+                file_results.append(
+                    {
+                        "filename": file.filename,
+                        "kind": "paypal",
+                        "imported": result.added,
+                        "skipped": result.already_known,
+                    }
+                )
+                logger.info(
+                    "Processed %s (PayPal): %s", file.filename, result.summary()
+                )
+                continue
+
             transactions = parser.parse(contents)
 
             # Transactions are already categorized during parsing.
@@ -461,6 +524,12 @@ async def upload_csv(files: list[UploadFile] = File(...)) -> dict:
                 f"{file_skipped} skipped"
             )
 
+        except PayPalFormatError as e:
+            logger.error(f"Error reading PayPal export {file.filename}: {e}")
+            raise HTTPException(
+                status_code=422,
+                detail=f"PayPal export unreadable in {file.filename}: {e}",
+            )
         except Exception as e:
             logger.error(f"Error parsing {file.filename}: {str(e)}")
             raise HTTPException(
@@ -473,6 +542,8 @@ async def upload_csv(files: list[UploadFile] = File(...)) -> dict:
         "imported": imported_total,
         "files": file_results,
     }
+    if paypal_rows:
+        result["paypal_rows"] = paypal_rows
 
     if imported_new:
         result.update(await _classify_import(imported_new))

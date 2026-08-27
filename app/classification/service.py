@@ -7,12 +7,17 @@ the same funnel:
 1. **The merchant cache.** A merchant somebody already categorised is answered
    from the database. A hand-corrected entry outranks anything the model would
    say, which is what makes a correction in the UI stick.
-2. **The unresolvable-PayPal rule.** Comdirect truncates the merchant out of
-   some PayPal lines. There is nothing in them to classify, so they are filed
-   with the configured fallback rather than spending a call on a question with
-   no answer. They are marked ``fallback`` and carry confidence 0, so they can
-   be found again — the category is knowingly approximate.
-3. **The API**, for what is left.
+2. **PayPal recovery.** Comdirect truncates the merchant out of some PayPal
+   lines. If a PayPal export has been imported, the payee is looked up there
+   by amount and settlement date and put back — after which the line is an
+   ordinary transaction naming an ordinary merchant, and steps 1 and 3 handle
+   it like any other. See :mod:`app.paypal`.
+3. **The unresolvable-PayPal fallback.** A truncated line the export could not
+   speak for has nothing in it to classify, so it is filed with the configured
+   fallback rather than spending a call on a question with no answer. It is
+   marked ``fallback`` and carries confidence 0, so it can be found again —
+   the category is knowingly approximate.
+4. **The API**, for what is left.
 
 Every result the API returns is then checked twice: the pair must exist in the
 hierarchy, and the confidence must clear the threshold. Anything that fails
@@ -55,6 +60,7 @@ from app.normalization import (
     normalize_merchant,
     shorten_merchant,
 )
+from app.paypal import PayPalLedger, PayPalMatch, has_records, load_ledger
 
 logger = get_logger(__name__)
 
@@ -74,6 +80,10 @@ class Classification:
     reason: str
     source: str
     merchant: str = ""
+    #: Set when the merchant came from a PayPal export rather than from the
+    #: booking text, so the recovery can be audited and undone.
+    paypal_counterparty: str | None = None
+    paypal_settlement_code: str | None = None
 
     @property
     def needs_review(self) -> bool:
@@ -96,6 +106,7 @@ class ClassificationRun:
     ledgers: list = field(default_factory=list)
     refunds: int = 0
     failed: int = 0
+    paypal_recovered: int = 0
     usage: dict | None = None
 
     def summary(self) -> str:
@@ -103,6 +114,7 @@ class ClassificationRun:
             f"{len(self.classifications)} transactions: "
             f"{self.cache_hits} from cache, {self.api_calls} merchants asked, "
             f"{self.deduplicated} deduplicated, "
+            f"{self.paypal_recovered} PayPal payees recovered, "
             f"{self.fallbacks} fallback, {self.failed} failed; "
             f"{self.below_threshold} below threshold, "
             f"{self.invalid_codes} invalid codes -> review; "
@@ -215,10 +227,16 @@ class ClassificationService:
         threshold: float | None = None,
         escalation_classifier: "ClaudeClassifier | None" = None,
         escalate: bool | None = None,
+        paypal_ledger: PayPalLedger | None = None,
     ) -> None:
         self._classifier = classifier
         self._injected_primary = classifier is not None
         self._escalation_classifier = escalation_classifier
+        # Loaded on first use and kept for the life of the service: one import
+        # classifies in several batches and each would otherwise re-read every
+        # stored PayPal row. None means "not looked up yet", not "none exist".
+        self._paypal_ledger = paypal_ledger
+        self._paypal_ledger_loaded = paypal_ledger is not None
         self.threshold = (
             threshold
             if threshold is not None
@@ -260,6 +278,54 @@ class ClassificationService:
         self._escalation_classifier = ClaudeClassifier(model=model)
         return self._escalation_classifier
 
+    async def _get_paypal_ledger(self) -> PayPalLedger | None:
+        """
+        The PayPal ledger, or None when no export has been imported.
+
+        Loaded lazily so an installation that never imports a PayPal export
+        pays nothing for the feature, and cached so a multi-batch import reads
+        the collection once.
+        """
+        if self._paypal_ledger_loaded:
+            return self._paypal_ledger
+        self._paypal_ledger_loaded = True
+        try:
+            if await has_records():
+                self._paypal_ledger = await load_ledger()
+        except Exception:  # pragma: no cover - the feature is optional
+            # A missing collection or an unreachable database must not take an
+            # import down: without a ledger the fallback still applies, which
+            # is exactly the behaviour this feature replaces.
+            logger.warning("PayPal ledger unavailable; falling back", exc_info=True)
+            self._paypal_ledger = None
+        return self._paypal_ledger
+
+    async def _recover_paypal_payees(
+        self, transactions: Sequence[Transaction]
+    ) -> dict[str, PayPalMatch]:
+        """
+        Look up the payee of every truncated PayPal line, by transaction id.
+
+        Only lines Comdirect actually truncated are looked up. A PayPal line
+        that already names its merchant is left alone: the booking text is the
+        record the bank stands behind, and the export is only consulted where
+        the bank has nothing to say.
+        """
+        truncated = [t for t in transactions if is_unresolvable_paypal(t.booking_text)]
+        if not truncated:
+            return {}
+
+        ledger = await self._get_paypal_ledger()
+        if ledger is None:
+            return {}
+
+        matches: dict[str, PayPalMatch] = {}
+        for transaction in truncated:
+            match = ledger.resolve(transaction.amount, transaction.date.date())
+            if match is not None:
+                matches[str(transaction.id)] = match
+        return matches
+
     async def classify(
         self, transactions: Sequence[Transaction], use_cache: bool = True
     ) -> ClassificationRun:
@@ -287,6 +353,16 @@ class ClassificationService:
             str(t.id): normalize_merchant(t.booking_text, t.process)
             for t in transactions
         }
+
+        # Step 1b: put back the payees Comdirect truncated out of PayPal
+        # lines. This happens before the names are folded together, so a payee
+        # recovered here merges with the same merchant seen under its own name
+        # elsewhere in the batch and is answered from the cache with it.
+        paypal_matches = await self._recover_paypal_payees(transactions)
+        for transaction_id, match in paypal_matches.items():
+            raw_names[transaction_id] = normalize_merchant(match.counterparty)
+        run.paypal_recovered = len(paypal_matches)
+
         canonical = build_canonical_map(name for name in raw_names.values() if name)
         merchants = {
             transaction_id: canonical.get(name, name)
@@ -299,7 +375,10 @@ class ClassificationService:
         for transaction in transactions:
             transaction_id = str(transaction.id)
 
-            if is_unresolvable_paypal(transaction.booking_text):
+            if (
+                is_unresolvable_paypal(transaction.booking_text)
+                and transaction_id not in paypal_matches
+            ):
                 run.fallbacks += 1
                 run.classifications.append(self._paypal_fallback(transaction_id))
                 continue
@@ -377,6 +456,15 @@ class ClassificationService:
             adjusted = apply_refund_rule(classification, amount)
             if adjusted is not classification:
                 run.refunds += 1
+            # Recorded after the refund rule, which builds a fresh
+            # Classification and would otherwise drop the provenance.
+            match = paypal_matches.get(adjusted.transaction_id)
+            if match is not None:
+                adjusted = replace(
+                    adjusted,
+                    paypal_counterparty=match.counterparty,
+                    paypal_settlement_code=match.settlement.code,
+                )
             refiled.append(adjusted)
         run.classifications = refiled
 
@@ -566,27 +654,48 @@ class ClassificationService:
         )
 
 
-def apply_refund_rule(classification: Classification, amount: float) -> Classification:
+def refund_target(major: str, minor: str, amount: float) -> tuple[str, str] | None:
     """
-    Re-file a credit that was categorised as spending.
+    Where a transaction belongs when its category disagrees with its direction.
 
-    The merchant cache answers per merchant, and one merchant can produce both
-    directions: a purchase at Amazon and the refund for it carry the same
-    merchant key but opposite meanings. Twelve merchants in the live data do
-    this, across 143 transactions.
+    A category answers "what was this for", and it is remembered per merchant.
+    The direction is a property of the single transaction, and one merchant
+    produces both: a purchase at Amazon and the refund for it carry the same
+    merchant key and opposite meanings. Rather than key the cache on the amount
+    as well — doubling the entries and halving the hit rate for a five percent
+    case — the disagreement is resolved here.
 
-    Rather than key the cache on the amount as well — which would double the
-    entries and halve the hit rate for a five percent case — an incoming
-    payment filed under an expense category is moved to refunds. Income and
-    transfers are left alone: a salary or a transfer between own accounts is
+    Returns the refund pair for an incoming amount filed as spending, and
+    ``None`` when the category and the direction already agree. Income and
+    transfers are never touched: a salary or a transfer between own accounts is
     positive by nature and means nothing of the sort.
+
+    The reverse — an outgoing amount filed as a refund — cannot be repaired by
+    a rule, because the category it should have had is not recoverable. Those
+    are reported so they can be classified again.
     """
-    if amount <= 0 or classification.flow_type != "expense":
-        return classification
+    if amount <= 0:
+        return None
+    if (major, minor) == REFUND_PAIR or flow_type_for(major) != "expense":
+        return None
+    return REFUND_PAIR
+
+
+def is_misfiled_refund(major: str, minor: str, amount: float) -> bool:
+    """An outgoing amount sitting under refunds, which no rule can repair."""
+    return amount < 0 and (major, minor) == REFUND_PAIR
+
+
+def apply_refund_rule(classification: Classification, amount: float) -> Classification:
+    """Re-file a credit that was categorised as spending. See refund_target."""
     if classification.needs_review:
         return classification
 
-    major, minor = REFUND_PAIR
+    target = refund_target(classification.major, classification.minor, amount)
+    if target is None:
+        return classification
+
+    major, minor = target
     return Classification(
         transaction_id=classification.transaction_id,
         major=major,
@@ -623,6 +732,9 @@ async def apply(
         transaction.confidence = classification.confidence
         transaction.reason = classification.reason
         transaction.classification_source = classification.source
+        if classification.paypal_counterparty:
+            transaction.paypal_counterparty = classification.paypal_counterparty
+            transaction.paypal_settlement_code = classification.paypal_settlement_code
         await transaction.save()
         written += 1
     return written

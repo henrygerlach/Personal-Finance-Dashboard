@@ -23,6 +23,59 @@ from app.utils import (
 
 logger = get_logger(__name__)
 
+#: How many transactions each direction of a drill-down returns. Enough to
+#: show what actually drove the thing that was clicked, without turning the
+#: popup into a statement listing.
+TOP_DETAIL_TRANSACTIONS = 8
+
+
+def _describe_transaction(transaction) -> dict:
+    """
+    One transaction as the dashboard's drill-down list needs it.
+
+    The merchant is the recovered PayPal counterparty where there is one,
+    because for those lines Comdirect's own booking text says only "PayPal".
+    The raw booking text travels alongside it so the panel can show the line
+    the bank actually recorded.
+    """
+    merchant = getattr(transaction, "paypal_counterparty", None) or normalize_merchant(
+        transaction.booking_text, transaction.process
+    )
+    return {
+        "id": str(transaction.id),
+        "date": transaction.date.strftime("%Y-%m-%d"),
+        "amount": transaction.amount,
+        "merchant": merchant or "Unnamed payment",
+        "booking_text": transaction.booking_text,
+        "major": transaction.major_category or "Other",
+        "minor": transaction.minor_category or "Uncategorized",
+        "is_recurring": bool(getattr(transaction, "is_recurring", False)),
+    }
+
+
+def _summarize_side(transactions: list, limit: int) -> dict:
+    """
+    One direction of a bar: its top transactions and what they leave out.
+
+    ``rest`` is what the rows beyond the limit add up to, so the panel can say
+    how much of the bar it is not showing instead of implying the list is the
+    whole story.
+
+    Args:
+        transactions: Every transaction on this side, already ranked.
+        limit: How many of them to return.
+    """
+    shown = transactions[:limit]
+    total = sum(transaction.amount for transaction in transactions)
+    shown_total = sum(transaction.amount for transaction in shown)
+    return {
+        "transactions": [_describe_transaction(t) for t in shown],
+        "count": len(transactions),
+        "hidden_count": len(transactions) - len(shown),
+        "total": total,
+        "rest": total - shown_total,
+    }
+
 
 class ComdirectBalanceService:
     """Authenticate once and cache Comdirect balances in memory."""
@@ -349,6 +402,128 @@ class ChartDataService:
         }
 
         return response_data
+
+    @staticmethod
+    def _month_bounds(month: str) -> tuple[datetime, datetime]:
+        """
+        The half-open datetime range covering a ``YYYY-MM`` month key.
+
+        Returns:
+            Start of the month and start of the following one.
+
+        Raises:
+            ValueError: If ``month`` is not a ``YYYY-MM`` key.
+        """
+        try:
+            year, index = (int(part) for part in month.split("-"))
+            start = datetime(year, index, 1)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"{month!r} is not a YYYY-MM month") from error
+        # December rolls into January of the next year; every other month just
+        # steps its index.
+        end = datetime(year + 1, 1, 1) if index == 12 else datetime(year, index + 1, 1)
+        return start, end
+
+    @staticmethod
+    def _period_bounds(
+        month: Optional[str], year: Optional[int]
+    ) -> tuple[Optional[datetime], Optional[datetime]]:
+        """
+        The half-open range a detail request covers, or ``(None, None)``.
+
+        A month is more specific than a year and wins when both are given —
+        the month already names one. ``(None, None)`` means all of history,
+        which is what the dashboard's "All years" asks for.
+        """
+        if month:
+            return ChartDataService._month_bounds(month)
+        if year:
+            return datetime(year, 1, 1), datetime(year + 1, 1, 1)
+        return None, None
+
+    @staticmethod
+    async def get_transaction_detail(
+        month: Optional[str] = None,
+        year: Optional[int] = None,
+        category: Optional[str] = None,
+        category_type: Optional[str] = None,
+        limit: int = TOP_DETAIL_TRANSACTIONS,
+    ) -> dict:
+        """
+        The transactions behind one thing the dashboard drew.
+
+        Every plot resolves a click to the same two questions — which period,
+        and which category — so one endpoint answers for all of them: a bar of
+        the monthly chart asks for a month, a slice of a breakdown asks for a
+        category over the selected year, and the spectrum asks for a major
+        category over that same year.
+
+        Both directions come back separately rather than as one "biggest
+        movements" ranking. What was clicked is a *net* sum, so a refund filed
+        under an expense category belongs to it just as much as the spending
+        does, and merging the two would let one large refund crowd out the
+        payments it offsets.
+
+        Args:
+            month: Month key in ``YYYY-MM`` format, or None.
+            year: Year to cover, or None for all of history. Ignored when
+                ``month`` is given.
+            category: Category to narrow to, or None for every category.
+            category_type: Whether ``category`` names a major or a minor
+                category. Must match the granularity the plot was drawn at.
+            limit: How many transactions to return per direction.
+
+        Returns:
+            Dict echoing the scope, with the net total and an ``incoming`` and
+            ``outgoing`` side, each holding its top transactions, its own
+            total and how much of that total the returned rows account for.
+
+        Raises:
+            ValueError: If ``month`` is given and is not a ``YYYY-MM`` key.
+        """
+        start, end = ChartDataService._period_bounds(month, year)
+        category_field = (
+            "major_category" if category_type == "major" else "minor_category"
+        )
+
+        # Reading the whole collection is only right when the whole of history
+        # was asked for; any narrower scope is a range query.
+        if start is None:
+            transactions = await Transaction.find_all().to_list()
+        else:
+            transactions = await Transaction.find(
+                Transaction.date >= start, Transaction.date < end
+            ).to_list()
+
+        # The same exclusion the charts use, so the detail adds up to the
+        # thing it was opened from.
+        rows = [
+            transaction
+            for transaction in transactions
+            if not should_exclude_transaction(transaction)
+            and (
+                category is None
+                or (getattr(transaction, category_field, None) or "Other") == category
+            )
+        ]
+
+        incoming = sorted(
+            (t for t in rows if t.amount > 0), key=lambda t: (-t.amount, t.date)
+        )
+        outgoing = sorted(
+            (t for t in rows if t.amount < 0), key=lambda t: (t.amount, t.date)
+        )
+
+        return {
+            "month": month,
+            "year": year,
+            "category": category,
+            "category_type": "major" if category_type == "major" else "minor",
+            "net": sum(t.amount for t in rows),
+            "count": len(rows),
+            "incoming": _summarize_side(incoming, limit),
+            "outgoing": _summarize_side(outgoing, limit),
+        }
 
 
 class CategorizationService:

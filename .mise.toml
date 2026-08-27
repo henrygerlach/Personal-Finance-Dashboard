@@ -1,0 +1,97 @@
+# Toolchain, environment and tasks for the dashboard.
+#
+# This file is the single place the three startup paths agree on: the README's
+# `mise run dev`, the Spotlight app bundles in scripts/, and a plain shell.
+# scripts/lib.sh reads the container name and port from here by convention, so
+# changing MONGO_PORT below means changing CD_MONGO_PORT there too.
+#
+# mise refuses to read an untrusted config. Run `mise trust` once in this
+# directory after cloning.
+
+[tools]
+python = "3.11"
+poetry = "latest"
+
+[env]
+# mongod listens on 27017 inside the container; the host mapping is 27018 so
+# it cannot collide with another project's MongoDB. Without this the app falls
+# back to 27017 and dies on the first query — which is exactly what happened
+# while this file was missing.
+MONGODB_URL = "mongodb://localhost:27018"
+
+# bank_analyzer belongs to the previous version of this dashboard and is still
+# in use. This project has its own database and must not write to that one.
+DATABASE_NAME = "bank_analyzer_dev"
+
+# The Anthropic API key is deliberately *not* here: this file is in version
+# control. It is read from .env, which is not.
+
+[tasks.install]
+description = "Install the Python dependencies into Poetry's virtualenv"
+run = "poetry install"
+
+[tasks.mongo]
+description = "Start MongoDB in Docker, creating the container on first run"
+run = """
+if [ -z "$(docker ps -aq -f name=^mongo-bank$)" ]; then
+  docker run -d --name mongo-bank -p 27018:27017 -v mongo-bank-data:/data/db mongo:latest
+else
+  docker start mongo-bank
+fi
+"""
+
+[tasks.dev]
+description = "Run the dashboard with auto-reload on http://127.0.0.1:8000"
+depends = ["mongo"]
+run = "poetry run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000"
+
+[tasks.test]
+description = "Run the test suite"
+run = "poetry run pytest"
+
+[tasks.lint]
+description = "Check formatting and lint rules"
+run = ["poetry run ruff check app tests scripts", "poetry run ruff format --check app tests scripts"]
+
+[tasks.format]
+description = "Apply formatting"
+run = "poetry run ruff format app tests scripts"
+
+# --- One-off and maintenance tasks ------------------------------------------
+
+[tasks.merchants]
+description = "Report how well normalization collapses transactions onto merchants"
+run = "poetry run python scripts/merchant_report.py"
+
+[tasks.migrate]
+description = "Migrate categories to the new taxonomy (--dry-run to preview)"
+run = "poetry run python scripts/migrate_categories.py"
+
+[tasks.backfill]
+description = "Classify transactions still holding a provisional category"
+run = "poetry run python scripts/backfill_classification.py"
+
+[tasks.repair-refunds]
+description = "Re-file transactions whose category disagrees with their direction"
+run = "poetry run python scripts/repair_refunds.py"
+
+[tasks.eval]
+description = "Score the classifier against the hand-made categories"
+run = "poetry run python scripts/eval_classification.py"
+
+[tasks.import-paypal]
+description = "Import PayPal activity exports so truncated bank lines find their payee"
+run = "poetry run python scripts/import_paypal.py"
+
+[tasks.resolve-paypal]
+description = "Re-file PayPal transactions whose payee the export recovered (--dry-run to preview)"
+run = "poetry run python scripts/resolve_paypal.py"
+
+[tasks.backup]
+description = "Dump the working database before anything that rewrites it"
+run = """
+mkdir -p backups
+docker exec mongo-bank mongodump --db="$DATABASE_NAME" --archive --gzip \
+  > "backups/$DATABASE_NAME-$(date +%Y%m%d-%H%M%S).archive.gz"
+ls -lh backups/ | tail -3
+"""

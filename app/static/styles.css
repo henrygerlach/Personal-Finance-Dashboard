@@ -1681,3 +1681,164 @@ input:disabled {
   margin-right: 0.45rem;
   vertical-align: baseline;
 }
+
+/* --- Transaction detail popup -------------------------------------------- */
+
+/* Wide enough for two directions side by side; narrowed back down by
+   .is-single when only one of them has anything in it, so the rows do not
+   drift away from their amounts. */
+.detail-modal .modal-content {
+  width: min(900px, 100%);
+}
+
+.detail-modal .modal-content.is-single {
+  width: min(560px, 100%);
+}
+
+.detail-modal .modal-header h2 {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.detail-modal .cat-swatch {
+  flex: none;
+  width: 0.7rem;
+  height: 0.7rem;
+}
+
+.detail-sides {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--gap-lg);
+}
+
+.detail-side {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-sm);
+}
+
+.detail-side-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--gap-md);
+  padding-bottom: var(--gap-xs);
+  border-bottom: 1px solid var(--rule);
+}
+
+.detail-side-head .num {
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.detail-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.detail-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: baseline;
+  gap: var(--gap-sm);
+  padding: 0.45rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.detail-row:last-child {
+  border-bottom: none;
+}
+
+.detail-date {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--paper-faint);
+  white-space: nowrap;
+}
+
+/* The merchant is the long part of the row, so it is the part that gives way:
+   the date and the amount keep their width at every viewport. */
+.detail-name {
+  min-width: 0;
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.detail-amount {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.detail-amount.is-positive,
+.detail-side-head .num.is-positive {
+  color: var(--pos);
+}
+
+.detail-amount.is-negative,
+.detail-side-head .num.is-negative {
+  color: var(--neg);
+}
+
+/* The row's own category, carrying the band's colour on its edge so a payment
+   can be tied back to the part of the chart it came from. */
+.detail-tag {
+  display: inline-block;
+  margin-top: 3px;
+  padding-left: 0.4rem;
+  border-left: 2px solid var(--rule-strong);
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--paper-faint);
+}
+
+.detail-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--paper-faint);
+  border: 1px solid var(--rule-strong);
+  border-radius: 999px;
+  padding: 0 0.4rem;
+  vertical-align: middle;
+}
+
+.detail-rest {
+  font-size: 0.76rem;
+  color: var(--paper-faint);
+}
+
+/* --- Anything that opens the popup --------------------------------------- */
+
+/* The canvas charts cannot be reached by keyboard at all, so the lists beside
+   them carry the same click — and have to show that they do. */
+.is-clickable {
+  cursor: pointer;
+}
+
+.legend-row.is-clickable,
+.spectrum-key.is-clickable {
+  border-radius: var(--radius-sm);
+  transition: background 0.12s ease;
+}
+
+.legend-row.is-clickable:hover,
+.spectrum-key.is-clickable:hover {
+  background: var(--ink-2);
+}
+
+.legend-row.is-clickable:focus-visible,
+.spectrum-key.is-clickable:focus-visible,
+.spectrum-seg.is-clickable:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
