@@ -17,9 +17,13 @@ Two cases, and only one of them is repairable:
 *An incoming amount under an expense category* is a refund. The correct
 category is derivable, so it is rewritten.
 
-*An outgoing amount under refunds* cannot be repaired, because the category it
-should have had is not recoverable. Those are handed back to the classifier by
-marking them pending; ``backfill_classification.py`` picks them up.
+*An outgoing amount under any income category* cannot be repaired, because the
+category it should have had is not recoverable. Income is money coming in, so
+the pair contradicts the direction whatever the minor is — a payment sent to
+the person who pays you maintenance is not "other income", and it counts as
+income everywhere because flow_type is derived from the major. Those are
+handed back to the classifier by marking them pending;
+``backfill_classification.py`` picks them up.
 
 Usage:
     python scripts/repair_refunds.py --dry-run
@@ -35,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.categories import flow_type_for  # noqa: E402
 from app.classification.service import (  # noqa: E402
-    is_misfiled_refund,
+    is_misfiled_income,
     refund_target,
 )
 from app.config import settings  # noqa: E402
@@ -62,7 +66,7 @@ async def main() -> int:
         unrepairable = [
             t
             for t in transactions
-            if is_misfiled_refund(t.major_category, t.minor_category, t.amount)
+            if is_misfiled_income(t.major_category, t.minor_category, t.amount)
         ]
 
         print(f"database             : {settings.database_name}")
@@ -85,16 +89,19 @@ async def main() -> int:
         print()
         if unrepairable:
             print(
-                f"debits filed as refunds  : {len(unrepairable)} "
+                f"debits filed as income   : {len(unrepairable)} "
                 "(not repairable, handed back to the classifier)"
             )
             for transaction in unrepairable:
                 print(
                     f"  {transaction.date:%Y-%m-%d} {transaction.amount:>9.2f}  "
-                    f"{(transaction.booking_text or '')[:64]}"
+                    f"{transaction.major_category} / {transaction.minor_category}"
+                    f"  {(transaction.booking_text or '')[:48]}"
                 )
+            total = sum(t.amount for t in unrepairable)
+            print(f"  {total:.2f} EUR counted as income it never was")
         else:
-            print("debits filed as refunds  : none")
+            print("debits filed as income   : none")
 
         if args.dry_run:
             print("\nDry run — nothing written.")
@@ -115,7 +122,9 @@ async def main() -> int:
             transaction.classification_source = SOURCE_PENDING
             transaction.confidence = None
             transaction.reason = (
-                "Was filed as a refund despite being an outgoing payment."
+                f"Was filed under {transaction.major_category} / "
+                f"{transaction.minor_category} despite being an outgoing "
+                "payment."
             )
             await transaction.save()
 

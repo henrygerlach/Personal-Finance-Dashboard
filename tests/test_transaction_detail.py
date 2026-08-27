@@ -98,7 +98,7 @@ def test_a_refund_inside_an_expense_band_is_listed_on_its_own_side(monkeypatch):
         ],
     )
 
-    result = detail(month="2026-03", category="Groceries")
+    result = detail(month="2026-03", categories=["Groceries"])
 
     assert result["net"] == pytest.approx(-60.0)
     assert result["count"] == 3
@@ -119,7 +119,7 @@ def test_each_side_is_ranked_by_size(monkeypatch):
         ],
     )
 
-    result = detail(month="2026-03", category="Groceries")
+    result = detail(month="2026-03", categories=["Groceries"])
     order = [row["id"] for row in result["outgoing"]["transactions"]]
 
     assert order == ["big", "mid", "small"]
@@ -136,7 +136,7 @@ def test_the_rows_beyond_the_limit_are_counted_not_dropped(monkeypatch):
         [tx(tid=str(i), amount=-float(i + 1)) for i in range(limit + 3)],
     )
 
-    result = detail(month="2026-03", category="Groceries", limit=limit)
+    result = detail(month="2026-03", categories=["Groceries"], limit=limit)
     outgoing = result["outgoing"]
 
     assert len(outgoing["transactions"]) == limit
@@ -167,7 +167,7 @@ def test_transfers_stay_out_of_the_drill_down(monkeypatch):
         ],
     )
 
-    result = detail(month="2026-03", category="Groceries")
+    result = detail(month="2026-03", categories=["Groceries"])
 
     assert result["count"] == 1
     assert result["net"] == pytest.approx(-40.0)
@@ -193,7 +193,7 @@ def test_a_major_granularity_click_filters_on_the_major_category(monkeypatch):
         ],
     )
 
-    result = detail(month="2026-03", category="Food & Drink", category_type="major")
+    result = detail(month="2026-03", categories=["Food & Drink"], category_type="major")
 
     assert result["count"] == 2
     assert result["net"] == pytest.approx(-65.0)
@@ -228,7 +228,7 @@ def test_only_the_clicked_month_is_read(monkeypatch):
         ],
     )
 
-    result = detail(month="2026-03", category="Groceries")
+    result = detail(month="2026-03", categories=["Groceries"])
 
     assert [row["id"] for row in result["outgoing"]["transactions"]] == ["march"]
 
@@ -269,10 +269,54 @@ def test_a_paypal_row_shows_the_recovered_counterparty(monkeypatch):
         ],
     )
 
-    row = detail(month="2026-03", category="Groceries")["outgoing"]["transactions"][0]
+    result = detail(month="2026-03", categories=["Groceries"])
+    row = result["outgoing"]["transactions"][0]
 
     assert row["merchant"] == "Bandcamp"
     assert row["booking_text"] == " PayPal Europe S.a.r.l. et Cie S.C.A "
+
+
+def test_several_categories_open_as_one_scope(monkeypatch):
+    """
+    A breakdown collapses its long tail into one "N smaller categories" wedge,
+    and that wedge has to open like every other part of the chart. It names the
+    whole tail rather than a category, so the filter takes a list.
+    """
+    use_transactions(
+        monkeypatch,
+        [
+            tx(tid="stamps", amount=-4.0, minor_category="Postage & Shipping"),
+            tx(tid="cable", amount=-9.0, minor_category="Electronics & Software"),
+            tx(tid="refund", amount=6.0, minor_category="Postage & Shipping"),
+            tx(tid="rent", amount=-447.0, minor_category="Rent"),
+        ],
+    )
+
+    result = detail(
+        month="2026-03",
+        categories=["Postage & Shipping", "Electronics & Software"],
+    )
+
+    assert result["count"] == 3, "the tail's categories, and nothing else"
+    assert result["net"] == pytest.approx(-7.0)
+    assert result["outgoing"]["count"] == 2
+    assert result["incoming"]["count"] == 1
+    assert result["categories"] == ["Postage & Shipping", "Electronics & Software"]
+
+
+def test_a_category_outside_the_list_is_left_out(monkeypatch):
+    """The wedge stands for its own tail, not for everything below the top N."""
+    use_transactions(
+        monkeypatch,
+        [
+            tx(tid="in", amount=-4.0, minor_category="Postage & Shipping"),
+            tx(tid="out", amount=-500.0, minor_category="Rent"),
+        ],
+    )
+
+    result = detail(month="2026-03", categories=["Postage & Shipping"])
+
+    assert [row["id"] for row in result["outgoing"]["transactions"]] == ["in"]
 
 
 # --- Scope ------------------------------------------------------------------
@@ -294,7 +338,7 @@ def test_a_year_covers_that_year_alone(monkeypatch):
     """A breakdown slice is a category over the year the filter is set to."""
     spread(monkeypatch)
 
-    result = detail(year=2025, category="Groceries")
+    result = detail(year=2025, categories=["Groceries"])
 
     assert result["count"] == 1
     assert result["net"] == pytest.approx(-20.0)
@@ -304,7 +348,7 @@ def test_omitting_month_and_year_covers_all_of_history(monkeypatch):
     """Which is what the dashboard's "All years" asks for."""
     spread(monkeypatch)
 
-    result = detail(category="Groceries")
+    result = detail(categories=["Groceries"])
 
     assert result["count"] == 3
     assert result["net"] == pytest.approx(-70.0)
@@ -314,7 +358,7 @@ def test_a_month_outranks_a_year(monkeypatch):
     """The month already names its year, so a stale year must not narrow it."""
     spread(monkeypatch)
 
-    result = detail(month="2026-06", year=2024, category="Groceries")
+    result = detail(month="2026-06", year=2024, categories=["Groceries"])
 
     assert [row["id"] for row in result["outgoing"]["transactions"]] == ["2026"]
 
@@ -323,9 +367,9 @@ def test_the_scope_comes_back_with_the_answer(monkeypatch):
     """The popup titles itself from what it asked for, so it has to be echoed."""
     spread(monkeypatch)
 
-    result = detail(year=2025, category="Food & Drink", category_type="major")
+    result = detail(year=2025, categories=["Food & Drink"], category_type="major")
 
     assert result["month"] is None
     assert result["year"] == 2025
-    assert result["category"] == "Food & Drink"
+    assert result["categories"] == ["Food & Drink"]
     assert result["category_type"] == "major"

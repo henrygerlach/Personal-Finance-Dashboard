@@ -75,6 +75,10 @@ run = "poetry run python scripts/backfill_classification.py"
 description = "Re-file transactions whose category disagrees with their direction"
 run = "poetry run python scripts/repair_refunds.py"
 
+[tasks.migrate-merchant-directions]
+description = "Give every merchant cache entry the direction it speaks for (--dry-run to preview)"
+run = "poetry run python scripts/migrate_merchant_directions.py"
+
 [tasks.eval]
 description = "Score the classifier against the hand-made categories"
 run = "poetry run python scripts/eval_classification.py"

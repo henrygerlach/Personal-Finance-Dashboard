@@ -46,6 +46,21 @@ def get_templates() -> Jinja2Templates:
     return templates
 
 
+async def nav_counts() -> dict[str, int]:
+    """
+    The badge counts the navigation bar draws next to Review and Categorize.
+
+    They belong to the shared layout rather than to any one page, so every
+    page route spreads this in. Passing them per route made the badges
+    vanish on whichever page forgot to: an undefined count renders as
+    nothing instead of failing, so the omission looked like an empty queue.
+    """
+    return {
+        "review_count": await ReviewService.count(),
+        "uncategorized_count": await CategorizationService.get_uncategorized_count(),
+    }
+
+
 # ============================================================================
 # Page Routes
 # ============================================================================
@@ -61,10 +76,7 @@ async def dashboard(request: Request) -> HTMLResponse:
             "request": request,
             "title": "Dashboard",
             "active_path": "/",
-            "uncategorized_count": (
-                await CategorizationService.get_uncategorized_count()
-            ),
-            "review_count": await ReviewService.count(),
+            **await nav_counts(),
             "render_balance_section": (
                 ComdirectBalanceService.should_render_balance_section()
             ),
@@ -82,6 +94,7 @@ async def upload_page(request: Request) -> HTMLResponse:
             "request": request,
             "title": "Upload",
             "active_path": "/upload",
+            **await nav_counts(),
         },
     )
 
@@ -104,7 +117,6 @@ async def categorize_page(
     """
     templates = get_templates()
     transaction = await CategorizationService.get_uncategorized_transaction(skip=skip)
-    uncategorized_count = await CategorizationService.get_uncategorized_count()
 
     return templates.TemplateResponse(
         "categorize.html",
@@ -112,9 +124,9 @@ async def categorize_page(
             "request": request,
             "title": "Categorize",
             "active_path": "/categorize",
+            **await nav_counts(),
             "transaction": transaction,
             "categories": CATEGORY_HIERARCHY,
-            "uncategorized_count": uncategorized_count,
             "skip": skip,
         },
     )
@@ -140,13 +152,11 @@ async def review_page(
             "request": request,
             "title": "Needs Review",
             "active_path": "/review",
+            **await nav_counts(),
             "transactions": transactions,
-            "review_count": await ReviewService.count(),
+            "paypal": await ReviewService.paypal_context(transactions),
             "categories": NEW_CATEGORY_HIERARCHY,
             "skip": skip,
-            "uncategorized_count": (
-                await CategorizationService.get_uncategorized_count()
-            ),
         },
     )
 
@@ -182,10 +192,8 @@ async def recurring_page(request: Request) -> HTMLResponse:
             "request": request,
             "title": "Recurring",
             "active_path": "/recurring",
+            **await nav_counts(),
             "overview": await RecurringService.overview(),
-            "uncategorized_count": (
-                await CategorizationService.get_uncategorized_count()
-            ),
         },
     )
 
@@ -199,6 +207,44 @@ async def detect_recurring() -> dict:
         "schedules": len(runs),
         "transactions": sum(run.occurrences for run in runs),
     }
+
+
+@router.post("/api/recurring/override")
+async def set_recurring_override(
+    schedule_id: Annotated[str, Form()],
+    decision: Annotated[str, Form()],
+) -> dict:
+    """
+    Record what the user says about one detected schedule.
+
+    Detection reads a pattern out of dates and amounts, so it can only guess
+    at the two things this settles: whether the pattern is a schedule at all,
+    and whether it is still running. Neither can be fixed by tuning a
+    threshold without breaking the other case, so the user has the last word.
+
+    Form fields:
+        schedule_id: The id the recurring page carries for a detected run.
+        decision: ``dismissed``, ``active`` or ``ended``.
+    """
+    try:
+        stored = await RecurringService.set_override(schedule_id, decision)
+    except ValueError as error:
+        # Covers an unknown decision and a schedule that detection no longer
+        # produces; neither is something to store.
+        raise HTTPException(status_code=422, detail=str(error))
+    return {"status": "success", **stored}
+
+
+@router.post("/api/recurring/override/clear")
+async def clear_recurring_override(
+    schedule_id: Annotated[str, Form()],
+) -> dict:
+    """Hand one schedule back to the detector."""
+    try:
+        cleared = await RecurringService.clear_override(schedule_id)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return {"status": "success", "cleared": cleared}
 
 
 @router.get("/rules", response_class=HTMLResponse)
@@ -231,6 +277,7 @@ async def rules_page(
             "request": request,
             "title": "Rules",
             "active_path": "/rules",
+            **await nav_counts(),
             "rules": rules,
             "grouped_rules": grouped_rules,
             "search": search or "",
@@ -305,7 +352,7 @@ async def get_cashflow_data(
 async def get_transaction_detail(
     month: Annotated[str | None, Query(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")] = None,
     year: Annotated[int | None, Query()] = None,
-    category: Annotated[str | None, Query()] = None,
+    categories: Annotated[list[str] | None, Query()] = None,
     category_type: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=50)] = TOP_DETAIL_TRANSACTIONS,
 ) -> dict:
@@ -313,17 +360,21 @@ async def get_transaction_detail(
     Get the transactions behind one thing the dashboard drew.
 
     Backs the drill-down popup every plot opens. A click always resolves to a
-    period and optionally a category, so one endpoint answers for all of them.
-    Both directions come back separately, because what was clicked is a net
-    sum and a refund filed under an expense category belongs to it just as
+    period and optionally some categories, so one endpoint answers for all of
+    them. Both directions come back separately, because what was clicked is a
+    net sum and a refund filed under an expense category belongs to it just as
     much as the spending does.
+
+    Categories are repeatable because not every slice stands for one of them:
+    a breakdown's "N smaller categories" wedge names the whole tail it
+    collapsed, and opens just like any other part of the chart.
 
     Query Parameters:
         month: Month key in YYYY-MM format (optional)
         year: Year to cover (optional; ignored when month is given, and
             omitting both covers all of history)
-        category: Category to narrow to (optional)
-        category_type: Whether category names a major or a minor category.
+        categories: Categories to narrow to, repeatable (optional)
+        category_type: Whether categories names major or minor categories.
             Must match the granularity the plot is drawn at.
         limit: How many transactions to return per direction
 
@@ -334,7 +385,7 @@ async def get_transaction_detail(
     return await ChartDataService.get_transaction_detail(
         month=month,
         year=year,
-        category=category,
+        categories=categories,
         category_type=category_type,
         limit=limit,
     )

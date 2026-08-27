@@ -47,6 +47,8 @@ from app.classification.client import (
 )
 from app.config import get_logger, settings
 from app.models import (
+    DIRECTION_IN,
+    DIRECTION_OUT,
     SOURCE_FALLBACK,
     SOURCE_LLM,
     SOURCE_USER,
@@ -66,6 +68,43 @@ logger = get_logger(__name__)
 
 #: Where an incoming payment at an expense merchant is filed.
 REFUND_PAIR = (MAJOR_INCOME, "Refunds & Reimbursements")
+
+
+def direction_of(amount: float) -> str:
+    """Which way one amount ran. Zero counts as outgoing; nothing produces it."""
+    return DIRECTION_IN if amount > 0 else DIRECTION_OUT
+
+
+def opposite(direction: str) -> str:
+    """The other direction."""
+    return DIRECTION_OUT if direction == DIRECTION_IN else DIRECTION_IN
+
+
+def entry_applies(major: str, amount: float) -> bool:
+    """
+    Whether a remembered category can honestly answer an amount of this sign.
+
+    Used when a merchant's only entry was learned from the other direction.
+    Most of the time it still answers, which is what keeps one entry per
+    merchant enough:
+
+    * A **transfer** means the same thing whichever way it ran — money between
+      one's own accounts, or to and from a person — so it answers both.
+    * A **credit at an expense merchant** is a refund, and ``refund_target``
+      rewrites it. The category is still the right thing to remember, which is
+      why the cache is not doubled for it.
+    * A **debit at an income merchant** has no honest reading at all. Income
+      is positive by nature; a payment *to* the person who pays you
+      maintenance is not negative income, and no rule can recover what it
+      should have been. That entry must not answer, so the transaction is
+      asked about in its own right instead.
+    """
+    flow = flow_type_for(major)
+    if flow == "transfer":
+        return True
+    if amount > 0:
+        return True
+    return flow == "expense"
 
 
 @dataclass
@@ -101,10 +140,16 @@ class ClassificationRun:
     below_threshold: int = 0
     invalid_codes: int = 0
     deduplicated: int = 0
+    #: Groups whose only cached answer was learned from the other direction
+    #: and could not honestly carry over, so they were asked about instead.
+    direction_conflicts: int = 0
     escalated: int = 0
     escalation_resolved: int = 0
     ledgers: list = field(default_factory=list)
     refunds: int = 0
+    #: Outgoing amounts that still ended up under an income category. Income
+    #: is positive by nature, so these are sent to review rather than counted.
+    misfiled_income: int = 0
     failed: int = 0
     paypal_recovered: int = 0
     usage: dict | None = None
@@ -118,32 +163,44 @@ class ClassificationRun:
             f"{self.fallbacks} fallback, {self.failed} failed; "
             f"{self.below_threshold} below threshold, "
             f"{self.invalid_codes} invalid codes -> review; "
-            f"{self.refunds} re-filed as refunds"
+            f"{self.refunds} re-filed as refunds, "
+            f"{self.direction_conflicts} asked again for their direction, "
+            f"{self.misfiled_income} debits under income -> review"
         )
 
 
-async def lookup_merchant(name: str) -> MerchantCategory | None:
+async def lookup_merchant(name: str, direction: str) -> MerchantCategory | None:
     """
-    Find a cached category for a normalized merchant name.
+    Find a cached category for a normalized merchant name and direction.
 
-    Falls back to the name with its trailing token dropped, because card
-    payments append the town and direct debits do not. Without that retry the
-    same shop would miss the entry its other spelling created.
+    Two fallbacks, in order of how much they give up:
+
+    The name with its trailing token dropped, because card payments append the
+    town and direct debits do not. Without that retry the same shop would miss
+    the entry its other spelling created.
+
+    Then the other direction, because most merchants only ever run one way and
+    would otherwise miss their own entry the first time a refund arrives. What
+    that entry may answer is not this function's decision — the caller checks
+    it against :func:`entry_applies`, which is where a debit at an income
+    merchant is turned away.
     """
     if not name:
         return None
 
-    entry = await MerchantCategory.find_one(
-        MerchantCategory.merchant_key == merchant_key(name)
-    )
-    if entry is not None:
-        return entry
-
+    keys = [merchant_key(name)]
     shorter = shorten_merchant(name)
     if shorter:
-        return await MerchantCategory.find_one(
-            MerchantCategory.merchant_key == merchant_key(shorter)
-        )
+        keys.append(merchant_key(shorter))
+
+    for wanted in (direction, opposite(direction)):
+        for key in keys:
+            entry = await MerchantCategory.find_one(
+                MerchantCategory.merchant_key == key,
+                MerchantCategory.direction == wanted,
+            )
+            if entry is not None:
+                return entry
     return None
 
 
@@ -152,16 +209,22 @@ async def remember_merchant(
     major: str,
     minor: str,
     source: str,
+    direction: str,
     confidence: float | None = None,
     reason: str | None = None,
     model_version: str | None = None,
 ) -> None:
     """
-    Write a merchant's category to the cache.
+    Write a merchant's category to the cache, for one direction.
 
     A ``user`` entry is never overwritten by the classifier: once a category
     has been corrected by hand it is the answer for that merchant, and a later
     model run must not undo it.
+
+    The direction is part of the identity of the entry, so correcting an
+    outgoing payment leaves the answer learned from that merchant's incoming
+    ones alone. Without that, one correction to a two-way merchant would undo
+    the other direction every time.
 
     ``model_version`` is recorded so entries written by an older model or
     prompt can be found and re-run later without disturbing hand-made ones.
@@ -170,13 +233,17 @@ async def remember_merchant(
         return
 
     key = merchant_key(name)
-    entry = await MerchantCategory.find_one(MerchantCategory.merchant_key == key)
+    entry = await MerchantCategory.find_one(
+        MerchantCategory.merchant_key == key,
+        MerchantCategory.direction == direction,
+    )
     now = datetime.utcnow()
 
     if entry is None:
         await MerchantCategory(
             merchant_key=key,
             display_name=name,
+            direction=direction,
             major=major,
             minor=minor,
             category_code=code_for(major, minor),
@@ -393,8 +460,8 @@ class ClassificationService:
             # merchant alone let the first transaction's sign decide for the
             # rest, which filed outgoing payments as refunds. Only the twelve
             # merchants that actually run both ways cost a second request.
-            direction = "+" if transaction.amount > 0 else "-"
-            key = f"{merchant_key(name)}{direction}" if name else f"\0{transaction_id}"
+            direction = direction_of(transaction.amount)
+            key = f"{merchant_key(name)}/{direction}" if name else f"\0{transaction_id}"
             by_key[key].append(transaction)
 
         # Step 3: the cache answers what it knows, per merchant rather than
@@ -405,7 +472,16 @@ class ClassificationService:
             name = merchants[str(representative.id)]
 
             if use_cache:
-                entry = await lookup_merchant(name)
+                entry = await lookup_merchant(name, direction_of(representative.amount))
+                # An entry learned from the other direction does not always
+                # carry over. Where it cannot, the group is asked about in its
+                # own right and the answer is remembered for *its* direction,
+                # so the merchant ends up with one entry per meaning.
+                if entry is not None and not entry_applies(
+                    entry.major, representative.amount
+                ):
+                    run.direction_conflicts += 1
+                    entry = None
                 if entry is not None:
                     entry.hit_count += len(group)
                     entry.last_used = datetime.utcnow()
@@ -456,6 +532,28 @@ class ClassificationService:
             adjusted = apply_refund_rule(classification, amount)
             if adjusted is not classification:
                 run.refunds += 1
+            # The other half of the same disagreement, and the last line of
+            # defence: a debit that still carries an income category, whether
+            # the model chose it or a cache entry survived entry_applies.
+            # Unlike a refund it has no derivable target, so it goes to review
+            # rather than being counted as income.
+            elif not adjusted.needs_review and is_misfiled_income(
+                adjusted.major, adjusted.minor, amount
+            ):
+                run.misfiled_income += 1
+                adjusted = replace(
+                    adjusted,
+                    major=NEEDS_REVIEW[0],
+                    minor=NEEDS_REVIEW[1],
+                    flow_type=flow_type_for(NEEDS_REVIEW[0]),
+                    confidence=0.0,
+                    reason=(
+                        f"Outgoing amount filed under "
+                        f"{adjusted.major} / {adjusted.minor}, which is "
+                        "income. The category it should have had cannot be "
+                        "derived, so it needs review."
+                    ),
+                )
             # Recorded after the refund rule, which builds a fresh
             # Classification and would otherwise drop the provenance.
             match = paypal_matches.get(adjusted.transaction_id)
@@ -513,7 +611,7 @@ class ClassificationService:
             if not group:
                 continue
             merchant = merchants.get(str(group[0].id), "")
-            decided = await self._accept(result, merchant, run)
+            decided = await self._accept(result, merchant, group[0].amount, run)
             run.api_calls += 1
             for transaction in group:
                 run.classifications.append(
@@ -581,7 +679,9 @@ class ClassificationService:
             if not group:
                 continue
             merchant = merchants.get(str(group[0].id), "")
-            decided = await self._accept(result, merchant, run, classifier=classifier)
+            decided = await self._accept(
+                result, merchant, group[0].amount, run, classifier=classifier
+            )
             if decided.needs_review:
                 # No better than the first answer; leave the original in
                 # place so the reason the user reads is the first one.
@@ -602,10 +702,18 @@ class ClassificationService:
         self,
         result: ClassificationResult,
         merchant: str,
+        amount: float,
         run: ClassificationRun,
         classifier: ClaudeClassifier | None = None,
     ) -> Classification:
-        """Validate one model result and decide whether to keep it."""
+        """
+        Validate one model result and decide whether to keep it.
+
+        ``amount`` is the representative transaction's, and is only used to
+        record which direction the merchant entry speaks for — every
+        transaction in the group ran the same way, because the direction is
+        part of the group key.
+        """
         if not is_valid_code(result.code):
             run.invalid_codes += 1
             logger.warning("Discarded unknown category code %r", result.code)
@@ -637,6 +745,7 @@ class ClassificationService:
                 major,
                 minor,
                 SOURCE_LLM,
+                direction_of(amount),
                 confidence=result.confidence,
                 reason=result.reason or None,
                 model_version=(classifier or self._get_classifier()).model,
@@ -661,18 +770,19 @@ def refund_target(major: str, minor: str, amount: float) -> tuple[str, str] | No
     A category answers "what was this for", and it is remembered per merchant.
     The direction is a property of the single transaction, and one merchant
     produces both: a purchase at Amazon and the refund for it carry the same
-    merchant key and opposite meanings. Rather than key the cache on the amount
-    as well — doubling the entries and halving the hit rate for a five percent
-    case — the disagreement is resolved here.
+    merchant key and opposite meanings. Rather than hold a second cache entry
+    for it — doubling the entries and halving the hit rate for a five percent
+    case — this disagreement is resolved here.
 
     Returns the refund pair for an incoming amount filed as spending, and
     ``None`` when the category and the direction already agree. Income and
     transfers are never touched: a salary or a transfer between own accounts is
     positive by nature and means nothing of the sort.
 
-    The reverse — an outgoing amount filed as a refund — cannot be repaired by
-    a rule, because the category it should have had is not recoverable. Those
-    are reported so they can be classified again.
+    The reverse — an outgoing amount under an income category — cannot be
+    repaired by a rule, because the category it should have had is not
+    recoverable. :func:`is_misfiled_income` reports those instead, and
+    :func:`entry_applies` stops the cache from creating new ones.
     """
     if amount <= 0:
         return None
@@ -681,9 +791,19 @@ def refund_target(major: str, minor: str, amount: float) -> tuple[str, str] | No
     return REFUND_PAIR
 
 
-def is_misfiled_refund(major: str, minor: str, amount: float) -> bool:
-    """An outgoing amount sitting under refunds, which no rule can repair."""
-    return amount < 0 and (major, minor) == REFUND_PAIR
+def is_misfiled_income(major: str, minor: str, amount: float) -> bool:
+    """
+    An outgoing amount sitting under *any* income category.
+
+    Income is money coming in. A negative amount under one of its minors is a
+    contradiction whatever the minor is — a payment sent to the person who
+    pays you maintenance is no more "other income" than a debit under refunds
+    is a refund — and it is counted as income everywhere, because
+    ``flow_type`` is derived from the major. No rule can repair it: the
+    category it should have had is not recoverable from the one it has. These
+    are reported so they can be classified again.
+    """
+    return amount < 0 and flow_type_for(major) == "income"
 
 
 def apply_refund_rule(classification: Classification, amount: float) -> Classification:
@@ -747,6 +867,12 @@ def report_lines(run: ClassificationRun, transaction_count: int) -> list[str]:
     Every number here answers a question the pipeline was built to answer: how
     many transactions collapsed onto how many merchants, how many of those the
     cache already knew, and what the rest cost.
+
+    The last two lines are the category-against-direction rules: how often a
+    merchant's remembered answer could not carry over to the other direction
+    and had to be asked again, and how many outgoing amounts still ended up
+    under an income category and were sent to review. Both should normally be
+    small; a large one means a merchant is being read the wrong way round.
     """
     asked = run.api_calls
     # Counted from the finished classifications rather than from the number of
@@ -765,6 +891,8 @@ def report_lines(run: ClassificationRun, transaction_count: int) -> list[str]:
         f"  invalid codes      : {run.invalid_codes}",
         f"  failed             : {run.failed}",
         f"re-filed as refunds  : {run.refunds}",
+        f"asked for direction  : {run.direction_conflicts}",
+        f"debits under income  : {run.misfiled_income}",
     ]
 
     answered = run.cache_hits + run.deduplicated + run.fallbacks

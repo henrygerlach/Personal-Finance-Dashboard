@@ -25,6 +25,7 @@ from app.paypal.store import (
     has_records,
     import_export,
     load_ledger,
+    settlement_details,
     store_rows,
 )
 
@@ -40,5 +41,6 @@ __all__ = [
     "import_export",
     "load_ledger",
     "parse_export",
+    "settlement_details",
     "store_rows",
 ]

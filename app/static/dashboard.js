@@ -437,7 +437,8 @@
       // The spectrum is drawn at major granularity whatever the page is set
       // to, so its clicks have to say so rather than inherit the filter.
       makeElementClickable(seg, {
-        category: row.category,
+        categories: [row.category],
+        label: row.category,
         categoryType: "major",
       });
       bar.appendChild(seg);
@@ -454,7 +455,8 @@
       key.querySelector(".spectrum-value").textContent = formatCurrency(row.spend);
       key.querySelector(".spectrum-share").textContent = formatPercent(share);
       makeElementClickable(key, {
-        category: row.category,
+        categories: [row.category],
+        label: row.category,
         categoryType: "major",
       });
       keys.appendChild(key);
@@ -595,7 +597,20 @@
   /** Heading for a scope: what was clicked, then when. */
   function detailTitle(scope) {
     const when = scope.month ? formatMonthLong(scope.month) : detailPeriodLabel();
-    return scope.category ? `${scope.category} · ${when}` : when;
+    return scope.label ? `${scope.label} · ${when}` : when;
+  }
+
+  /**
+   * Colour for the heading's swatch, or null when there is nothing to key on.
+   *
+   * A scope covering several categories has no colour of its own, so it takes
+   * the muted grey the charts already draw the collapsed wedge in.
+   */
+  function detailSwatchColor(scope) {
+    const categories = scope.categories || [];
+    if (categories.length === 1) return categoryColor(categories[0]);
+    if (categories.length > 1) return token("--rule-strong", "#35404e");
+    return null;
   }
 
   function openDetailModal() {
@@ -624,10 +639,13 @@
   /**
    * Open the popup for one scope.
    *
-   * @param {object} scope           What was clicked.
-   * @param {string} [scope.month]   Month key, for a click that names a month.
-   * @param {string} [scope.category]      Category, for a click that names one.
-   * @param {string} [scope.categoryType]  Granularity of that category name;
+   * @param {object}   scope           What was clicked.
+   * @param {string}   [scope.month]   Month key, for a click naming a month.
+   * @param {string[]} [scope.categories]  Categories to narrow to. Usually one,
+   *   but a breakdown's collapsed wedge names the whole tail it stands for.
+   * @param {string}   [scope.label]   What to call that in the heading; the
+   *   collapsed wedge is called "N smaller categories", not by any one name.
+   * @param {string}   [scope.categoryType]  Granularity those names are at;
    *   defaults to the granularity the page is currently drawn at.
    */
   async function openDetail(scope) {
@@ -642,7 +660,7 @@
 
     // Show the frame straight away: the click has to feel answered even while
     // the request is out.
-    setDetailHead(detailTitle(scope), scope.category, "");
+    setDetailHead(scope, "");
     el("detail-sides").innerHTML = '<p class="spectrum-empty">Loading…</p>';
     setDetailSingleColumn(true);
     openDetailModal();
@@ -654,8 +672,9 @@
       const year = currentYear();
       if (year) params.append("year", year);
     }
-    if (scope.category) {
-      params.append("category", scope.category);
+    const categories = scope.categories || [];
+    categories.forEach((category) => params.append("categories", category));
+    if (categories.length) {
       params.append("category_type", scope.categoryType || granularity);
     }
 
@@ -675,11 +694,12 @@
     renderDetail(payload, scope, granularity);
   }
 
-  function setDetailHead(heading, category, summary) {
+  function setDetailHead(scope, summary) {
     const swatch = el("detail-swatch");
-    swatch.hidden = !category;
-    if (category) swatch.style.background = categoryColor(category);
-    el("detail-heading").textContent = heading;
+    const color = detailSwatchColor(scope);
+    swatch.hidden = !color;
+    if (color) swatch.style.background = color;
+    el("detail-heading").textContent = detailTitle(scope);
     el("detail-summary").textContent = summary;
   }
 
@@ -774,19 +794,23 @@
 
   function renderDetail(payload, scope, granularity) {
     setDetailHead(
-      detailTitle(scope),
-      payload.category,
+      scope,
       `net ${formatCurrency(payload.net)} · ` +
         `${payload.count} transaction${payload.count === 1 ? "" : "s"}`
     );
+
+    // Only a scope of exactly one category makes a row's own category
+    // redundant; a group of them is the reason to show it.
+    const categories = scope.categories || [];
+    const drilled = categories.length === 1 ? categories[0] : null;
 
     const sides = el("detail-sides");
     sides.innerHTML = "";
     // Money out first: the dashboard is mostly spending, so that is what a
     // click is usually asking about.
     const boxes = [
-      renderDetailSide(payload.outgoing, "Money out", payload.category, granularity),
-      renderDetailSide(payload.incoming, "Money in", payload.category, granularity),
+      renderDetailSide(payload.outgoing, "Money out", drilled, granularity),
+      renderDetailSide(payload.incoming, "Money in", drilled, granularity),
     ].filter(Boolean);
     boxes.forEach((node) => sides.appendChild(node));
 
@@ -918,7 +942,15 @@
     });
 
     const category = inside || (closest && closest.category);
-    return category ? { month, category } : null;
+    return category ? { month, categories: [category], label: category } : null;
+  }
+
+  /** The scope a breakdown row stands for, collapsed tail included. */
+  function breakdownScope(row) {
+    return {
+      categories: row.muted ? row.members : [row.category],
+      label: row.category,
+    };
   }
 
   /** The arc under a chart event, mapped back to the row that drew it. */
@@ -931,9 +963,7 @@
     );
     if (!hits.length) return null;
     const row = rows[hits[0].index];
-    // The collapsed tail stands for many categories at once and names none.
-    if (!row || row.muted) return null;
-    return { category: row.category };
+    return row ? breakdownScope(row) : null;
   }
 
   // --- Cashflow chart -------------------------------------------------------
@@ -1091,6 +1121,9 @@
       category: `${tail.length} smaller categories`,
       [valueKey]: rest,
       muted: true,
+      // Kept so the wedge can be opened like any other: it names the whole
+      // tail it stands for rather than a category of its own.
+      members: tail.map((row) => row.category),
     });
     return head;
   }
@@ -1125,8 +1158,7 @@
         row[valueKey]
       );
       item.querySelector(".legend-share").textContent = formatPercent(share);
-      // The collapsed tail stands for many categories at once and names none.
-      if (!row.muted) makeElementClickable(item, { category: row.category });
+      makeElementClickable(item, breakdownScope(row));
       list.appendChild(item);
     });
 

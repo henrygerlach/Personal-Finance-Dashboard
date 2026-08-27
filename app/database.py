@@ -14,6 +14,7 @@ from app.models import (
     ComdirectBalanceSnapshot,
     MerchantCategory,
     PayPalRecord,
+    RecurringOverride,
     Transaction,
 )
 
@@ -42,6 +43,7 @@ class DatabaseManager:
                 MerchantCategory,
                 ComdirectBalanceSnapshot,
                 PayPalRecord,
+                RecurringOverride,
             ],
         )
         logger.info("Database connection established and Beanie initialized")

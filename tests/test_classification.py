@@ -31,7 +31,8 @@ from app.classification.prompt import (
 from app.classification.service import (
     ClassificationService,
     apply_refund_rule,
-    is_misfiled_refund,
+    entry_applies,
+    is_misfiled_income,
     refund_target,
     report_lines,
 )
@@ -91,10 +92,10 @@ def make_transaction(
 def no_database(monkeypatch):
     """Neutralise the cache so each test opts into the behaviour it needs."""
 
-    async def no_lookup(name):
+    async def no_lookup(name, direction):
         return None
 
-    async def no_remember(name, major, minor, source, **kwargs):
+    async def no_remember(name, major, minor, source, direction, **kwargs):
         return None
 
     monkeypatch.setattr(service_module, "lookup_merchant", no_lookup)
@@ -341,7 +342,7 @@ def test_a_paypal_line_that_names_its_merchant_is_left_alone():
 def test_a_known_merchant_is_answered_from_the_cache(monkeypatch):
     saved = []
 
-    async def lookup(name):
+    async def lookup(name, direction):
         entry = SimpleNamespace(
             major="Food & Drink",
             minor="Groceries",
@@ -367,13 +368,81 @@ def test_a_known_merchant_is_answered_from_the_cache(monkeypatch):
     assert saved and saved[0].hit_count == 4
 
 
+def test_a_debit_at_an_income_merchant_is_asked_about_instead_of_cached(monkeypatch):
+    """
+    The live bug, from the top. One person paid maintenance *and* was paid by
+    PayPal. A single cache entry saying "Other Income" answered both
+    directions, so seven outgoing payments were filed as income. The entry
+    learned from the incoming side must not answer the outgoing one — the
+    group is asked about in its own right, and the answer is then remembered
+    for its own direction.
+    """
+    asked = []
+
+    async def lookup(name, direction):
+        asked.append(direction)
+        entry = SimpleNamespace(
+            major="Income",
+            minor="Other Income",
+            source=SOURCE_USER,
+            hit_count=68,
+        )
+
+        async def save():
+            raise AssertionError("a rejected entry must not be touched")
+
+        entry.save = save
+        return entry
+
+    monkeypatch.setattr(service_module, "lookup_merchant", lookup)
+
+    stub = StubClassifier(results=[ClassificationResult("1", "13.8", 0.9)])
+    transaction = make_transaction("1", " MAREN GERLACH ", amount=-52.50)
+    result = run(ClassificationService(classifier=stub).classify([transaction]))
+
+    assert asked == ["out"]
+    assert result.cache_hits == 0
+    assert result.direction_conflicts == 1
+    assert len(stub.seen) == 1
+    assert result.classifications[0].minor == "Person to Person"
+
+
+def test_the_same_merchant_keeps_its_answer_for_the_other_direction(monkeypatch):
+    """The incoming side of that merchant is untouched and still cached."""
+
+    async def lookup(name, direction):
+        assert direction == "in"
+        entry = SimpleNamespace(
+            major="Income",
+            minor="Other Income",
+            source=SOURCE_USER,
+            hit_count=68,
+        )
+
+        async def save():
+            return None
+
+        entry.save = save
+        return entry
+
+    monkeypatch.setattr(service_module, "lookup_merchant", lookup)
+
+    stub = StubClassifier()
+    transaction = make_transaction("1", " MAREN GERLACH ", amount=500.0)
+    result = run(ClassificationService(classifier=stub).classify([transaction]))
+
+    assert stub.seen == []
+    assert result.cache_hits == 1
+    assert result.classifications[0].minor == "Other Income"
+
+
 def test_use_cache_false_sends_everything_to_the_api(monkeypatch):
     """
     The evaluation needs this: scoring against a cache built from the same
     transactions would measure the cache, not the model.
     """
 
-    async def lookup(name):
+    async def lookup(name, direction):
         raise AssertionError("cache must not be consulted")
 
     monkeypatch.setattr(service_module, "lookup_merchant", lookup)
@@ -437,8 +506,8 @@ def test_a_low_confidence_result_is_not_written_to_the_cache(monkeypatch):
     """A guess must not become the remembered answer for a merchant."""
     remembered = []
 
-    async def remember(name, major, minor, source, **kwargs):
-        remembered.append((name, major, minor, source))
+    async def remember(name, major, minor, source, direction, **kwargs):
+        remembered.append((name, major, minor, source, direction))
 
     monkeypatch.setattr(service_module, "remember_merchant", remember)
 
@@ -454,8 +523,8 @@ def test_a_low_confidence_result_is_not_written_to_the_cache(monkeypatch):
 def test_an_accepted_result_is_written_to_the_cache(monkeypatch):
     remembered = []
 
-    async def remember(name, major, minor, source, **kwargs):
-        remembered.append((name, major, minor, source))
+    async def remember(name, major, minor, source, direction, **kwargs):
+        remembered.append((name, major, minor, source, direction))
 
     monkeypatch.setattr(service_module, "remember_merchant", remember)
 
@@ -465,7 +534,9 @@ def test_an_accepted_result_is_written_to_the_cache(monkeypatch):
             [make_transaction("1", " NEUER LADEN ")]
         )
     )
-    assert remembered == [("NEUER LADEN", "Food & Drink", "Groceries", SOURCE_LLM)]
+    assert remembered == [
+        ("NEUER LADEN", "Food & Drink", "Groceries", SOURCE_LLM, "out")
+    ]
 
 
 # --- Failure isolation -------------------------------------------------------
@@ -518,8 +589,12 @@ def test_flow_type_is_derived_not_taken_from_the_model():
             ClassificationResult("3", "3.1", 0.95),
         ]
     )
+    # Each amount runs the way its category implies: a salary is a credit, a
+    # transfer is either, groceries are a debit. A category that contradicts
+    # the direction is a different rule's business, and it would send the
+    # transaction to review before this one could be observed.
     transactions = [
-        make_transaction("1", " A "),
+        make_transaction("1", " A ", amount=2400.0),
         make_transaction("2", " B "),
         make_transaction("3", " C "),
     ]
@@ -594,7 +669,7 @@ def test_the_refund_rule_runs_on_cache_hits_too(monkeypatch):
     category for both directions.
     """
 
-    async def lookup(name):
+    async def lookup(name, direction):
         entry = SimpleNamespace(
             major="Shopping",
             minor="General Merchandise",
@@ -744,7 +819,7 @@ def test_an_escalated_result_is_cached_under_the_stronger_model():
     """model_version has to name the model that actually decided."""
     remembered = []
 
-    async def remember(name, major, minor, source, **kwargs):
+    async def remember(name, major, minor, source, direction, **kwargs):
         remembered.append((name, kwargs.get("model_version")))
 
     weak = StubClassifier(results=[ClassificationResult("1", "3.1", 0.4, "x")])
@@ -829,16 +904,69 @@ def test_income_and_transfers_are_never_re_filed_as_refunds(major, minor):
     assert refund_target(major, minor, 1500.0) is None
 
 
-def test_a_debit_filed_as_a_refund_is_reported_as_unrepairable():
+def test_a_debit_under_any_income_category_is_reported_as_unrepairable():
     """
     The mirror case. It cannot be fixed by a rule — the category it should
     have had is not recoverable — so it has to be found and re-classified
-    rather than silently rewritten. Seven of these were in the live data,
-    left behind by a cache entry that had already been removed.
+    rather than silently rewritten.
+
+    It is not specific to refunds. Seven transactions in the live data sat
+    under Income / Other Income at -168.38 EUR, because the person who pays
+    maintenance was also paid *by* PayPal, and one cache entry answered for
+    both directions. Every income minor has to be caught, not just the one
+    whose name suggests a direction.
     """
-    assert is_misfiled_refund("Income", "Refunds & Reimbursements", -4.49)
-    assert not is_misfiled_refund("Income", "Refunds & Reimbursements", 4.49)
-    assert not is_misfiled_refund("Shopping", "Clothing & Shoes", -4.49)
+    assert is_misfiled_income("Income", "Refunds & Reimbursements", -4.49)
+    assert is_misfiled_income("Income", "Other Income", -52.50)
+    assert is_misfiled_income("Income", "Salary & Wages", -1500.0)
+    assert not is_misfiled_income("Income", "Other Income", 52.50)
+    assert not is_misfiled_income("Shopping", "Clothing & Shoes", -4.49)
+    assert not is_misfiled_income("Transfers & Savings", "Person to Person", -4.49)
+
+
+def test_every_income_minor_is_covered():
+    """
+    An exhaustive check, because the bug this exists to catch was a single
+    minor being special-cased.
+    """
+    from app.categories import CATEGORY_HIERARCHY
+
+    for minor in CATEGORY_HIERARCHY["Income"]:
+        assert is_misfiled_income("Income", minor, -10.0)
+        assert not is_misfiled_income("Income", minor, 10.0)
+
+
+def test_a_debit_at_an_income_merchant_is_not_answered_from_the_cache():
+    """
+    ``entry_applies`` is what stops the live bug from happening again. A
+    remembered income category may answer a credit, and a remembered expense
+    category may answer a credit too — that is a refund, and the refund rule
+    rewrites it. Only a debit at an income merchant has no reading at all.
+    """
+    assert entry_applies("Income", 52.50)
+    assert not entry_applies("Income", -52.50)
+    assert entry_applies("Shopping", -52.50)
+    # A credit at an expense merchant: still answered, then re-filed as a
+    # refund. Keeping it in the cache is what avoids a second entry per shop.
+    assert entry_applies("Shopping", 52.50)
+    # A transfer means the same thing whichever way it ran.
+    assert entry_applies("Transfers & Savings", 52.50)
+    assert entry_applies("Transfers & Savings", -52.50)
+
+
+def test_a_debit_that_still_carries_an_income_category_goes_to_review():
+    """
+    The last line of defence, for an answer the cache never saw: whatever
+    produced it, an outgoing amount must not be counted as income.
+    """
+    stub = StubClassifier(results=[ClassificationResult("1", "1.6", 0.95)])
+    transaction = make_transaction("1", " MAREN GERLACH ", amount=-52.50)
+    result = run(ClassificationService(classifier=stub).classify([transaction]))
+
+    assert result.misfiled_income == 1
+    decided = result.classifications[0]
+    assert (decided.major, decided.minor) == NEEDS_REVIEW
+    assert "Other Income" in decided.reason
 
 
 def test_the_rule_holds_for_every_category_in_the_hierarchy():

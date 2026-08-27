@@ -7,6 +7,7 @@ from typing import Optional
 
 from beanie import Document, Indexed
 from pydantic import Field
+from pymongo import ASCENDING, IndexModel
 
 # Where a transaction's category came from. Recorded per transaction so a
 # result can always be traced back and, if needed, recomputed.
@@ -15,6 +16,15 @@ SOURCE_PENDING = "pending"  # provisional category, awaiting classification
 SOURCE_LLM = "llm"  # returned by the classifier
 SOURCE_USER = "user"  # corrected by hand; outranks everything else
 SOURCE_FALLBACK = "fallback"  # no merchant in the booking text; see normalization
+
+# Which way the money ran. A remembered category answers "what was this for",
+# and the same merchant can produce both directions with opposite meanings —
+# maintenance received from a person, and a payment sent to that same person.
+# The direction is therefore part of what a merchant entry remembers.
+DIRECTION_IN = "in"  # an incoming amount
+DIRECTION_OUT = "out"  # an outgoing amount
+
+DIRECTIONS = frozenset({DIRECTION_IN, DIRECTION_OUT})
 
 CLASSIFICATION_SOURCES = frozenset(
     {
@@ -25,6 +35,17 @@ CLASSIFICATION_SOURCES = frozenset(
         SOURCE_FALLBACK,
     }
 )
+
+# What a hand-made decision can say about a detected schedule. Detection reads
+# a pattern out of the history and can only ever guess at two things: whether
+# the pattern is a schedule at all, and whether it is still running. These are
+# the answers to those two questions, and nothing else — an override says what
+# the user knows that the dates cannot show.
+OVERRIDE_DISMISSED = "dismissed"  # not a recurring payment; hide it
+OVERRIDE_ACTIVE = "active"  # still running, whatever the last charge says
+OVERRIDE_ENDED = "ended"  # stopped, whatever the last charge says
+
+OVERRIDE_DECISIONS = frozenset({OVERRIDE_DISMISSED, OVERRIDE_ACTIVE, OVERRIDE_ENDED})
 
 
 class Transaction(Document):
@@ -140,14 +161,25 @@ class MerchantCategory(Document):
     it is derived from the hierarchy's order — reordering the hierarchy
     renumbers every code, so a stored code must never be resolved back into a
     category on its own.
+
+    An entry is identified by the merchant *and* the direction it was learned
+    from, because one merchant can mean two different things depending on
+    which way the money ran: maintenance received from a person is income,
+    while a payment sent to that same person is a transfer. One entry per
+    merchant let the first direction seen answer for both, which filed
+    outgoing payments as income. A merchant that only ever runs one way still
+    keeps one entry — the lookup falls back across the direction when there is
+    nothing better, and :func:`app.classification.service.entry_applies`
+    decides whether that fallback can honestly answer.
     """
 
-    merchant_key: Indexed(str, unique=True) = Field(
+    merchant_key: str = Field(
         ...,
         description=(
             "Lookup key from app.normalization.merchant_key: the normalized "
             "name with spaces removed, so a line wrap in the middle of a word "
-            "cannot split one merchant into two entries."
+            "cannot split one merchant into two entries. Indexed as the "
+            "prefix of merchant_key_direction rather than on its own."
         ),
     )
     display_name: str = Field(
@@ -155,6 +187,15 @@ class MerchantCategory(Document):
         description=(
             "The readable normalized name behind the key, for the review UI "
             "and the classification prompt."
+        ),
+    )
+    direction: str = Field(
+        DIRECTION_OUT,
+        description=(
+            f"'{DIRECTION_IN}' or '{DIRECTION_OUT}': the direction of the "
+            "transactions this entry speaks for. Part of the identity of an "
+            "entry, so a merchant that runs both ways can hold one answer "
+            "per direction."
         ),
     )
     major: str = Field(..., description="Major category for this merchant")
@@ -202,6 +243,16 @@ class MerchantCategory(Document):
 
     class Settings:
         name = "merchant_categories"
+        indexes = [
+            # Unique on the pair, not on the merchant alone: two entries for
+            # one merchant are the point. The compound index also serves a
+            # lookup on merchant_key alone, since that is its prefix.
+            IndexModel(
+                [("merchant_key", ASCENDING), ("direction", ASCENDING)],
+                unique=True,
+                name="merchant_key_direction",
+            )
+        ]
 
 
 class PayPalRecord(Document):
@@ -241,6 +292,28 @@ class PayPalRecord(Document):
         ),
     )
     item_title: str = Field("", description="What was bought, when recorded.")
+    sender: str = Field(
+        "",
+        description=(
+            "Address the payment was sent from, as PayPal recorded it. "
+            "Context for a person reviewing a transaction, never evidence "
+            "for a match. Empty on rows where PayPal did not expose it, and "
+            "on every row imported before this field existed."
+        ),
+    )
+    receiver: str = Field(
+        "", description="Address the payment was sent to. See ``sender``."
+    )
+    subject: str = Field(
+        "", description="Subject line the payer gave the payment, if any."
+    )
+    note: str = Field(
+        "",
+        description=(
+            "Message the payer wrote on the payment. Often the only thing "
+            "saying what a payment between two people was for."
+        ),
+    )
     imported_at: datetime = Field(
         default_factory=datetime.utcnow,
         description="When this row was first stored.",
@@ -265,3 +338,64 @@ class ComdirectBalanceSnapshot(Document):
 
     class Settings:
         name = "comdirect_balance_snapshots"
+
+
+class RecurringOverride(Document):
+    """
+    A hand-made decision about one detected schedule.
+
+    Detection is a heuristic over dates and amounts, so it is wrong
+    occasionally in both directions: three bakery visits a month apart are
+    reported as a subscription, and a schedule paused over the summer is
+    reported as ended. Neither can be fixed by tuning a threshold without
+    breaking the other, so the user gets the last word.
+
+    An override is keyed on what actually makes a run distinct — the merchant,
+    the billing period, and the amount — rather than on any id belonging to
+    the run. Runs are recomputed from scratch on every page load and carry no
+    identity across that, so an override keyed on one would quietly stop
+    applying the moment a new charge moved the run's boundaries. Those three
+    fields are the same triple the detector itself groups by: a merchant's
+    charges are split into amount clusters and each cluster is examined per
+    period, so two schedules the detector keeps apart get their own overrides,
+    while a price rise — which stays inside one run precisely because it is
+    within the amount tolerance — keeps the override it already had.
+    """
+
+    merchant_key: str = Field(
+        ...,
+        description=(
+            "Lookup key from app.normalization.merchant_key for the run's "
+            "canonical merchant name."
+        ),
+    )
+    display_name: str = Field(
+        ..., description="The readable merchant name, for listing the override."
+    )
+    period: str = Field(..., description="The run's billing period, e.g. 'monthly'.")
+    amount: float = Field(
+        ...,
+        description=(
+            "The run's price when the decision was made. Matched within the "
+            "detector's own amount tolerance, so the override survives the "
+            "ordinary drift of a variable bill and a later price rise."
+        ),
+    )
+    decision: str = Field(..., description=f"One of {sorted(OVERRIDE_DECISIONS)}.")
+    decided_at: datetime = Field(
+        default_factory=datetime.utcnow,
+        description="When this decision was last written.",
+    )
+
+    class Settings:
+        name = "recurring_overrides"
+        indexes = [
+            # Not unique: one merchant can run several schedules at the same
+            # period, told apart by amount, and an amount match is a
+            # tolerance rather than an equality. The service enforces one
+            # override per schedule when it writes.
+            IndexModel(
+                [("merchant_key", ASCENDING), ("period", ASCENDING)],
+                name="merchant_period",
+            )
+        ]

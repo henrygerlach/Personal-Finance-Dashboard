@@ -32,10 +32,26 @@ from app.normalization import build_canonical_map, merchant_key, normalize_merch
 
 #: Intervals a recurring payment is allowed to follow, in days. Monthly is a
 #: range because month lengths differ and a charge on the 31st slides.
+#:
+#: Ordered shortest first, because a candidate stops at the first period that
+#: fits and the shortest one that fits is the one being followed.
 PERIODS: dict[str, tuple[int, int]] = {
     "monthly": (28, 31),
     "quarterly": (89, 92),
+    # Insurance and membership fees are commonly billed twice a year. Without
+    # this they fell between quarterly and yearly and were found as neither.
+    "half-yearly": (181, 186),
     "yearly": (363, 367),
+}
+
+#: How many months each period spans. The single place that knows, so a caller
+#: converting a charge to its monthly equivalent or projecting the next one
+#: does not restate the arithmetic.
+PERIOD_MONTHS: dict[str, int] = {
+    "monthly": 1,
+    "quarterly": 3,
+    "half-yearly": 6,
+    "yearly": 12,
 }
 
 #: How far a single interval may fall outside its period. Direct debits move
@@ -48,6 +64,14 @@ AMOUNT_TOLERANCE = 0.15
 
 #: Below this many charges there is no schedule, only a coincidence.
 MIN_OCCURRENCES = 3
+
+#: How many billing periods one run may miss in total.
+#:
+#: One, not one per gap: a subscription occasionally fails to collect, but a
+#: pattern held together by repeated absences is not a schedule. Allowing a
+#: skip at every gap let three drugstore visits spread over five months
+#: qualify as monthly.
+MAX_SKIPPED_PERIODS = 1
 
 #: What share of a merchant's similarly-sized charges inside the run's own
 #: time span must belong to the run.
@@ -108,31 +132,75 @@ def _cluster_by_amount(
     return clusters
 
 
-def _longest_run(
-    entries: Sequence[tuple[str, datetime, float]],
+def _periods_spanned(
+    gap: int,
+    period_name: str,
     period: tuple[int, int],
     tolerance_days: int,
-) -> list[tuple[str, datetime, float]]:
+) -> int:
+    """
+    How many billing periods one gap between charges covers.
+
+    Returns 0 when the gap matches no whole number of periods, which ends the
+    run.
+
+    A monthly run may cover two periods, meaning one charge is missing.
+    Without that, a single absent charge ends the run where it stands and
+    everything after it is thrown away — so a subscription still being paid
+    every month is reported as having stopped on whatever date its run
+    happened to break, which is what a failed direct debit or a month billed
+    at an odd amount actually looks like in the data.
+
+    Only monthly runs may do this, for two reasons. A month is the one
+    interval where a single miss is ordinary rather than a long silence. It is
+    also the only one whose doubled gap cannot be read as a different period:
+    two quarters is a half-year and two half-years is a year, so bridging
+    those would report a half-yearly premium as quarterly and double what the
+    page says it costs.
+    """
+    for multiple in (1, 2):
+        if multiple == 2 and period_name != "monthly":
+            return 0
+        low = period[0] * multiple - tolerance_days
+        high = period[1] * multiple + tolerance_days
+        if low <= gap <= high:
+            return multiple
+    return 0
+
+
+def _longest_run(
+    entries: Sequence[tuple[str, datetime, float]],
+    period_name: str,
+    period: tuple[int, int],
+    tolerance_days: int,
+) -> tuple[list[tuple[str, datetime, float]], int]:
     """
     The longest stretch of consecutive charges spaced by one period.
 
     Checked pair by pair rather than as an average, because an average hides
     exactly the pattern this is meant to exclude: twelve charges in a week and
     one a year later average out to monthly.
+
+    Returns:
+        The run, and how many billing periods it had to skip to hold together.
+        The caller needs the second number because a skip is an assumption
+        rather than an observation, and a run should not qualify on one.
     """
-    low, high = period[0] - tolerance_days, period[1] + tolerance_days
     ordered = sorted(entries, key=lambda item: item[1])
 
-    best: list = []
-    current = ordered[:1]
+    best: tuple[list, int] = ([], 0)
+    current: list = ordered[:1]
+    skipped = 0
     for previous, entry in zip(ordered, ordered[1:]):
         gap = (entry[1] - previous[1]).days
-        if low <= gap <= high:
+        spanned = _periods_spanned(gap, period_name, period, tolerance_days)
+        if spanned and skipped + spanned - 1 <= MAX_SKIPPED_PERIODS:
             current.append(entry)
+            skipped += spanned - 1
         else:
-            best = max(best, current, key=len)
-            current = [entry]
-    return max(best, current, key=len)
+            best = max(best, (current, skipped), key=lambda pair: len(pair[0]))
+            current, skipped = [entry], 0
+    return max(best, (current, skipped), key=lambda pair: len(pair[0]))
 
 
 def _span_coverage(
@@ -219,8 +287,14 @@ def find_recurring(
             if len(cluster) < min_occurrences:
                 continue
             for period_name, period in PERIODS.items():
-                run = _longest_run(cluster, period, interval_tolerance_days)
-                if len(run) >= min_occurrences:
+                run, skipped = _longest_run(
+                    cluster, period_name, period, interval_tolerance_days
+                )
+                # A skipped period is an assumption that a charge should have
+                # been there, so it must not be what gets a run over the line:
+                # three drugstore visits with a month missing between two of
+                # them are a coincidence, not a subscription.
+                if len(run) >= min_occurrences + skipped:
                     candidates.append((period_name, run))
                     # A run that is monthly is not also quarterly; the first
                     # period that fits is the one it follows.

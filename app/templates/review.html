@@ -36,6 +36,45 @@
         {% endif %}
       </div>
       <p class="review-booking">{{ transaction.booking_text }}</p>
+
+      {#
+        Comdirect prints no payee on a PayPal line, so once one has been
+        recovered the rest of what PayPal recorded is the only context there
+        is. A payment between two people often carries nothing but its
+        message. Every field is frequently empty, so each line stands or
+        falls on its own rather than the block assuming a shape.
+      #}
+      {% set pp = paypal.get(transaction.id | string) %}
+      {% if pp and (pp.counterparty or pp.sender or pp.receiver
+                    or pp.subject or pp.note or pp.item_title) %}
+      <dl class="transaction-facts paypal-facts">
+        {% if pp.counterparty %}
+        <dt>Payee</dt>
+        <dd>{{ pp.counterparty }}</dd>
+        {% endif %}
+        {% if pp.sender %}
+        <dt>From</dt>
+        <dd>{{ pp.sender }}</dd>
+        {% endif %}
+        {% if pp.receiver %}
+        <dt>To</dt>
+        <dd>{{ pp.receiver }}</dd>
+        {% endif %}
+        {% if pp.subject %}
+        <dt>Subject</dt>
+        <dd>{{ pp.subject }}</dd>
+        {% endif %}
+        {% if pp.note %}
+        <dt>Message</dt>
+        <dd class="paypal-message">{{ pp.note }}</dd>
+        {% endif %}
+        {% if pp.item_title %}
+        <dt>Item</dt>
+        <dd>{{ pp.item_title }}</dd>
+        {% endif %}
+      </dl>
+      {% endif %}
+
       {% if transaction.reason %}
       <p class="review-reason">{{ transaction.reason }}</p>
       {% endif %}

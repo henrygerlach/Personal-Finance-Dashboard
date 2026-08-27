@@ -138,6 +138,14 @@ class Settlement:
     item_title: str
     #: The payment the counterparty came from, for auditing a match.
     source_code: str
+    #: The two sides of the payment and whatever the payer wrote on it, taken
+    #: from the same row the counterparty came from. Context for a reviewer
+    #: only, never evidence: a person-to-person payment often carries nothing
+    #: but its message, and just as often carries nothing at all.
+    sender: str = ""
+    receiver: str = ""
+    subject: str = ""
+    note: str = ""
     #: True when the payee was found by matching amounts rather than by
     #: following this settlement's own pointer. Weaker evidence, kept visible
     #: so these can be reviewed as a group. See ``_payee_by_amount``.
@@ -182,6 +190,9 @@ class PayPalLedger:
         self._dates: dict[int, list[date]] = {
             cents: [s.date for s in bucket] for cents, bucket in self._index.items()
         }
+        # Built on first use: only the review page looks a settlement up by
+        # its own code, and every other caller searches by amount and date.
+        self._by_settlement_code: dict[str, Settlement] | None = None
 
     # --- Construction --------------------------------------------------------
 
@@ -210,6 +221,13 @@ class PayPalLedger:
                     item_title=source.item_title if source else record.item_title,
                     source_code=source.code if source else record.code,
                     linked_by_amount=by_amount,
+                    # The settlement is the bank-facing half and says nothing
+                    # about who was paid or why; the row that named the
+                    # counterparty is the one carrying both.
+                    sender=(source or record).sender,
+                    receiver=(source or record).receiver,
+                    subject=(source or record).subject,
+                    note=(source or record).note,
                 )
             )
         return settlements
@@ -314,6 +332,20 @@ class PayPalLedger:
     @property
     def settlements(self) -> Sequence[Settlement]:
         return tuple(self._settlements)
+
+    def settlement_for(self, code: str) -> Settlement | None:
+        """
+        The settlement with this transaction code, or None.
+
+        A transaction that has already been matched records the code it was
+        matched to, so this is how a caller gets back to what PayPal knew
+        about it without repeating the search that found it.
+        """
+        if not code:
+            return None
+        if self._by_settlement_code is None:
+            self._by_settlement_code = {s.code: s for s in self._settlements}
+        return self._by_settlement_code.get(code)
 
     def candidates(self, amount: float, booked_on: date) -> list[Settlement]:
         """

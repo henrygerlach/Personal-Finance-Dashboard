@@ -93,6 +93,35 @@ def test_a_yearly_payment_is_found():
     assert runs[0].period == "yearly"
 
 
+def test_a_half_yearly_payment_is_found():
+    """
+    German insurance and membership fees are commonly billed twice a year.
+    Before the half-yearly period existed these fell between quarterly and
+    yearly and were found as neither.
+    """
+    charges = [
+        charge("h1", 0, -240.00, "ALLIANZ"),
+        charge("h2", 182, -240.00, "ALLIANZ"),
+        charge("h3", 365, -240.00, "ALLIANZ"),
+        charge("h4", 547, -240.00, "ALLIANZ"),
+    ]
+    runs = find_recurring(charges)
+    assert len(runs) == 1
+    assert runs[0].period == "half-yearly"
+    assert runs[0].occurrences == 4
+
+
+def test_the_shortest_period_that_fits_is_the_one_reported():
+    """
+    A candidate stops at the first period that fits, so the periods have to be
+    tried shortest first: every monthly run is also two months from every
+    other charge, and a monthly subscription reported as quarterly would halve
+    the total it contributes.
+    """
+    runs = find_recurring(monthly("SPOTIFY AB", -4.99, 8))
+    assert runs[0].period == "monthly"
+
+
 def test_income_can_recur_too():
     """Rent, salary and maintenance are the clearest schedules in the data."""
     runs = find_recurring(monthly("EMPLOYER", 2400.00, 5))
@@ -132,6 +161,78 @@ def test_two_schedules_on_the_very_same_dates_are_still_separate():
 
 
 # --- What must not be found --------------------------------------------------
+
+
+def test_one_missed_month_does_not_end_a_subscription():
+    """
+    A direct debit that fails once, or a month billed at an odd amount, leaves
+    a hole in the run. Before the run could bridge it, everything after the
+    hole was thrown away and the schedule was reported as having stopped on
+    whatever date the run happened to break — while the merchant was visibly
+    still charging every month.
+    """
+    charges = monthly("VERMIETER", -399.0, 8)
+    del charges[5]
+
+    runs = find_recurring(charges)
+    assert len(runs) == 1
+    assert runs[0].occurrences == 7
+    # The run reaches the merchant's most recent charge, which is the whole
+    # point: liveness is judged from that date.
+    assert max(c.date for c in charges) == max(
+        c.date for c in charges if str(c.id) in runs[0].transaction_ids
+    )
+
+
+def test_a_skipped_period_cannot_be_what_qualifies_a_run():
+    """
+    A skip is an assumption that a charge should have been there, not an
+    observation that it was. Three drugstore visits with a month missing
+    between two of them are a coincidence; letting the skip make up the
+    numbers turned several of those into reported subscriptions.
+    """
+    charges = [
+        charge("r1", 0, -12.40, "ROSSMANN"),
+        charge("r2", 23, -13.10, "ROSSMANN"),
+        charge("r3", 80, -12.90, "ROSSMANN"),
+    ]
+    assert find_recurring(charges) == []
+
+
+def test_two_missed_months_are_a_different_schedule():
+    """One absence is a hiccup; a pattern held together by absences is not."""
+    charges = monthly("VERMIETER", -399.0, 9)
+    del charges[6]
+    del charges[3]
+
+    runs = find_recurring(charges)
+    # The longer of the two stretches survives, and it stops at the second
+    # hole rather than reaching across it.
+    assert len(runs) == 1
+    assert runs[0].occurrences < 7
+
+
+def test_a_half_yearly_run_never_bridges_a_period():
+    """
+    Two quarters is a half-year and two half-years is a year, so a bridged gap
+    on a longer period cannot be told apart from a different schedule. A
+    half-yearly premium reported as quarterly would double what it costs.
+    """
+    charges = [
+        charge("h1", 0, -240.00, "ALLIANZ"),
+        charge("h2", 91, -240.00, "ALLIANZ"),
+        charge("h3", 182, -240.00, "ALLIANZ"),
+        charge("h4", 273, -240.00, "ALLIANZ"),
+    ]
+    runs = find_recurring(charges)
+    assert runs[0].period == "quarterly", "a real quarterly run stays quarterly"
+
+    skipped = [
+        charge("s1", 0, -240.00, "HUK"),
+        charge("s2", 182, -240.00, "HUK"),
+        charge("s3", 364, -240.00, "HUK"),
+    ]
+    assert find_recurring(skipped)[0].period == "half-yearly"
 
 
 def test_two_charges_are_not_a_schedule():

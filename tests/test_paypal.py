@@ -6,7 +6,10 @@ locale, deciding which rows the bank ever saw and who stood behind them, and
 refusing to answer when two settlements fit equally well.
 """
 
+import asyncio
+from dataclasses import replace
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
 
@@ -18,6 +21,7 @@ from app.paypal.records import (
     parse_amount,
     parse_export,
 )
+from app.paypal.store import _fill_in_detail
 
 # --- Fixtures ----------------------------------------------------------------
 
@@ -447,3 +451,172 @@ class TestResolve:
 
     def test_an_empty_ledger_answers_nothing(self):
         assert PayPalLedger([]).resolve(-10.0, date(2024, 3, 6)) is None
+
+
+# --- What the payer wrote -----------------------------------------------------
+#
+# Comdirect prints no payee on a PayPal line, so once one has been recovered
+# the rest of what PayPal recorded is the only context a reviewer has. A
+# payment between two people frequently carries nothing but its message.
+
+DETAIL_HEADER_DE = (
+    '"Datum","Name","Typ","Status","Währung","Brutto","Transaktionscode",'
+    '"Zugehöriger Transaktionscode","Artikelbezeichnung",'
+    '"Absender E-Mail-Adresse","Empfänger E-Mail-Adresse","Betreff","Hinweis"'
+)
+
+DETAIL_HEADER_EN = (
+    '"Date","Name","Type","Status","Currency","Gross","Transaction ID",'
+    '"Reference Txn ID","Item Title",'
+    '"From Email Address","To Email Address","Subject","Note"'
+)
+
+
+class TestPayerDetail:
+    """The columns that say who paid whom, and what they wrote on it."""
+
+    def test_reads_them_from_a_german_export(self):
+        payload = (
+            DETAIL_HEADER_DE + "\n"
+            '"08.12.2025","Maren Gerlach","Handyzahlung","Abgeschlossen","EUR",'
+            '"-52,50","PAY1","","","payer@example.com","payee@example.de",'
+            '"Betreff hier","Abercrombie Jogginghose"'
+        )
+
+        record = parse_export(payload)[0]
+
+        assert record.sender == "payer@example.com"
+        assert record.receiver == "payee@example.de"
+        assert record.subject == "Betreff hier"
+        assert record.note == "Abercrombie Jogginghose"
+
+    def test_reads_them_from_an_english_export(self):
+        payload = (
+            DETAIL_HEADER_EN + "\n"
+            '"12/08/2025","Maren Gerlach","Mobile Payment","Completed","EUR",'
+            '"-52.50","PAY1","","","payer@example.com","payee@example.de",'
+            '"A subject","A note"'
+        )
+
+        record = parse_export(payload)[0]
+
+        assert record.sender == "payer@example.com"
+        assert record.note == "A note"
+
+    def test_an_export_without_them_still_reads(self):
+        """They are optional: an older export carries none of these columns."""
+        payload = (
+            GERMAN_HEADER
+            + "\n"
+            + german_row(
+                "08.12.2025", "Maren Gerlach", GENERAL_PAYMENT, "-52,50", "PAY1"
+            )
+        )
+
+        record = parse_export(payload)[0]
+
+        assert record.code == "PAY1"
+        assert (record.sender, record.receiver, record.subject, record.note) == (
+            "",
+            "",
+            "",
+            "",
+        )
+
+
+class TestDetailReachesTheSettlement:
+    """
+    The settlement is the bank-facing half and names nobody. The message rides
+    on the row that named the counterparty, which is the one a reviewer wants.
+    """
+
+    def test_the_message_comes_from_the_row_that_named_the_payee(self):
+        payment = PayPalRow(
+            code="PAY1",
+            date=date(2024, 3, 1),
+            kind=GENERAL_PAYMENT,
+            status="Abgeschlossen",
+            name="Maren Gerlach",
+            currency="EUR",
+            gross=-52.5,
+            related_code="",
+            item_title="",
+            sender="payer@example.com",
+            receiver="payee@example.de",
+            note="Datenvolumen",
+        )
+        settlement = row("SET1", 1, FUNDING, -52.5, related="PAY1")
+
+        found = ledger_with(payment, settlement).settlement_for("SET1")
+
+        assert found is not None
+        assert found.counterparty == "Maren Gerlach"
+        assert found.sender == "payer@example.com"
+        assert found.receiver == "payee@example.de"
+        assert found.note == "Datenvolumen"
+
+    def test_a_settlement_with_no_payee_row_keeps_its_own_blanks(self):
+        settlement = row("SET1", 1, FUNDING, -52.5)
+
+        found = ledger_with(settlement).settlement_for("SET1")
+
+        assert found is not None
+        assert found.note == ""
+
+    def test_an_unknown_code_resolves_to_nothing(self):
+        """An export can be narrower than the statement it is read against."""
+        ledger = ledger_with(row("SET1", 1, FUNDING, -52.5))
+
+        assert ledger.settlement_for("NOPE") is None
+        assert ledger.settlement_for("") is None
+
+
+class TestBackfillingDetailOntoKnownRows:
+    """
+    Re-importing never rewrites a stored row, because a later download
+    reporting a row differently would silently re-point matches already made.
+    The exception is a field that is empty and carries no matching weight:
+    rows stored before these columns were read have them blank, and filling
+    one in cannot re-point anything because nothing matches on it.
+    """
+
+    @staticmethod
+    def stored(**fields):
+        saved = []
+
+        class Doc(SimpleNamespace):
+            async def save(self):
+                saved.append(True)
+
+        defaults = dict(sender="", receiver="", subject="", note="")
+        defaults.update(fields)
+        return Doc(**defaults), saved
+
+    def test_an_empty_field_is_filled_in(self):
+        document, saved = self.stored()
+        fresh = row("PAY1", 1, GENERAL_PAYMENT, -52.5)
+        fresh = replace(fresh, note="Datenvolumen", sender="payer@example.com")
+
+        changed = asyncio.run(_fill_in_detail(document, fresh))
+
+        assert changed is True
+        assert document.note == "Datenvolumen"
+        assert document.sender == "payer@example.com"
+        assert saved == [True], "written once, not once per field"
+
+    def test_a_field_that_already_says_something_is_left_alone(self):
+        document, saved = self.stored(note="what the first export said")
+        fresh = replace(row("PAY1", 1, GENERAL_PAYMENT, -52.5), note="something else")
+
+        changed = asyncio.run(_fill_in_detail(document, fresh))
+
+        assert changed is False
+        assert document.note == "what the first export said"
+        assert saved == []
+
+    def test_nothing_to_add_writes_nothing(self):
+        document, saved = self.stored(note="kept")
+        fresh = row("PAY1", 1, GENERAL_PAYMENT, -52.5)
+
+        assert asyncio.run(_fill_in_detail(document, fresh)) is False
+        assert saved == []

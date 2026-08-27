@@ -1503,6 +1503,11 @@ input:disabled {
 }
 
 @media (max-width: 900px) {
+  .schedule-columns {
+    grid-template-columns: 1fr;
+    gap: var(--gap-lg);
+  }
+
   .charts-grid {
     grid-template-columns: 1fr;
   }
@@ -1682,6 +1687,449 @@ input:disabled {
   vertical-align: baseline;
 }
 
+/* --- Recurring: the page's own furniture ---------------------------------- */
+
+/* Per month against per year. The annual figure is the one that makes a
+   subscription look like what it costs, so it has to be one click away. */
+.unit-toggle {
+  display: inline-flex;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--ink-1);
+}
+
+.unit-toggle button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--paper-dim);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 0.4rem 0.9rem;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.unit-toggle button:hover {
+  color: var(--paper);
+}
+
+.unit-toggle button.is-active {
+  background: var(--ink-3);
+  color: var(--paper);
+}
+
+/* The three headline figures. Its own strip rather than the dashboard's,
+   which is sized for a fixed set of accounts. */
+.headline-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: var(--ink-1);
+  overflow: hidden;
+}
+
+.headline-card {
+  padding: var(--gap-lg);
+  border-left: 1px solid var(--rule);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-xs);
+  min-width: 0;
+}
+
+.headline-card:first-child {
+  border-left: 0;
+}
+
+.headline-card h4 {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--paper-faint);
+}
+
+.headline-amount {
+  font-family: var(--font-mono);
+  font-size: 1.4rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.headline-amount.is-positive {
+  color: var(--pos);
+}
+
+.headline-amount.is-negative {
+  color: var(--neg);
+}
+
+.headline-card.is-total {
+  background: var(--ink-2);
+}
+
+/* What is spoken for before any choice is made. A bar rather than a number
+   alone, because the whole point is the proportion. */
+.commitment {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-sm);
+}
+
+.commitment-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--ink-3);
+  overflow: hidden;
+}
+
+.commitment-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--paper-dim);
+}
+
+/* Committing more than comes in is the one state worth colouring. */
+.commitment-bar span.is-over {
+  background: var(--neg);
+}
+
+/* Overdue charges and price changes are already flagged on the cards; this
+   is the pointer that says to go looking. */
+.attention-note strong {
+  color: var(--paper);
+  font-family: var(--font-mono);
+}
+
+/* --- What is coming ------------------------------------------------------- */
+
+.upcoming-strip {
+  display: flex;
+  gap: 0;
+  overflow-x: auto;
+  list-style: none;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: var(--ink-1);
+}
+
+/* Grows to fill when only a few charges are due, scrolls when many: the
+   strip is a timeline, so it should always span the width it is given. */
+.upcoming-stop {
+  flex: 1 0 160px;
+  padding: var(--gap-md);
+  border-left: 1px solid var(--rule);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.upcoming-stop:first-child {
+  border-left: 0;
+}
+
+.upcoming-stop:hover,
+.upcoming-stop:focus-visible {
+  background: var(--ink-2);
+  outline: none;
+}
+
+.upcoming-when {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--paper-faint);
+}
+
+.upcoming-stop.is-late .upcoming-when {
+  color: var(--neg);
+}
+
+.upcoming-name {
+  font-size: 0.88rem;
+  overflow-wrap: anywhere;
+}
+
+.upcoming-amount {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- The live schedules --------------------------------------------------- */
+
+.schedule-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--gap-xl);
+  align-items: start;
+}
+
+.schedule-column {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-md);
+  min-width: 0;
+}
+
+.schedule-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-sm);
+}
+
+/* Transfers are a single full-width group rather than a column, so they read
+   as a footnote to the two directions and not as a third one. */
+.schedule-list.is-wide {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+}
+
+.schedule-card {
+  background: var(--ink-1);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  padding: var(--gap-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-xs);
+  min-width: 0;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.schedule-card:hover,
+.schedule-card:focus-visible {
+  border-color: var(--rule-strong);
+  background: var(--ink-2);
+  outline: none;
+}
+
+.schedule-head {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-xs);
+  flex-wrap: wrap;
+}
+
+.schedule-name {
+  font-size: 0.95rem;
+  font-weight: 600;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The card's swatch sits on the line with the name rather than hanging off
+   the text baseline, which is what .cat-swatch is set up for in a table. */
+.schedule-head .cat-swatch {
+  margin-right: 0;
+  vertical-align: middle;
+  flex: 0 0 auto;
+}
+
+.schedule-flag {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border: 1px solid var(--rule-strong);
+  border-radius: 999px;
+  padding: 0 0.4rem;
+  color: var(--paper-faint);
+  white-space: nowrap;
+}
+
+/* A charge that has not arrived is the one thing on a card worth acting on,
+   so it is the only one that gets a signal colour. */
+.schedule-flag.is-due {
+  color: var(--neg);
+  border-color: var(--neg);
+}
+
+.schedule-amount {
+  font-family: var(--font-mono);
+  font-size: 1.25rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.schedule-amount.is-positive {
+  color: var(--pos);
+}
+
+.schedule-billed,
+.schedule-next {
+  font-size: 0.75rem;
+  color: var(--paper-faint);
+}
+
+/* The shared money formatter colours by sign, but this line already says
+   "billed", so the sign is not news. */
+.schedule-billed [data-money] {
+  color: inherit;
+}
+
+.schedule-next .is-late {
+  color: var(--neg);
+}
+
+/* The card's share of the largest commitment in its column: the ranking has
+   to be readable before any number is. */
+.schedule-bar {
+  height: 3px;
+  border-radius: 999px;
+  background: var(--ink-3);
+  overflow: hidden;
+  margin: var(--gap-xs) 0;
+}
+
+.schedule-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+}
+
+/* Neither earning nor spending, so the group is set back from the two that
+   are — present, but not competing with them. */
+.schedule-quiet .schedule-card {
+  background: transparent;
+}
+
+/* --- Schedules that stopped ----------------------------------------------- */
+
+/* Real history, but not a commitment: reachable in one click and silent
+   until then. */
+.ended-block {
+  border-top: 1px solid var(--rule);
+  padding-top: var(--gap-md);
+}
+
+.ended-block summary {
+  cursor: pointer;
+  font-size: 0.9rem;
+  color: var(--paper-dim);
+  list-style: none;
+  display: flex;
+  align-items: baseline;
+  gap: var(--gap-xs);
+  flex-wrap: wrap;
+}
+
+.ended-block summary::-webkit-details-marker {
+  display: none;
+}
+
+.ended-block summary::before {
+  content: "▸";
+  color: var(--paper-faint);
+  font-size: 0.7rem;
+}
+
+.ended-block[open] summary::before {
+  content: "▾";
+}
+
+.ended-block summary:hover {
+  color: var(--paper);
+}
+
+.ended-count {
+  font-family: var(--font-mono);
+  color: var(--paper);
+  font-variant-numeric: tabular-nums;
+}
+
+.ended-block .table-scroll {
+  margin-top: var(--gap-md);
+}
+
+/* --- The schedule popup --------------------------------------------------- */
+
+/* Every row in this popup is the same merchant on the same schedule, so a
+   date column that changes width between rows is the only thing that moves —
+   which makes it the only thing the eye follows. */
+#schedule-charges .detail-date {
+  min-width: 5.8rem;
+}
+
+/* Where detection's verdict is shown and overruled. Set apart from the
+   charge list by a rule rather than a panel: it is a decision about the
+   schedule, not another fact about it. */
+.override-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-sm);
+  flex-wrap: wrap;
+  padding: var(--gap-sm) 0;
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+}
+
+.override-verdict {
+  font-size: 0.85rem;
+  color: var(--paper-dim);
+}
+
+/* Struck through once the user has said otherwise, so the popup shows the
+   decision next to the one it replaced. */
+.override-verdict.is-overruled {
+  text-decoration: line-through;
+  color: var(--paper-faint);
+}
+
+.override-actions {
+  display: flex;
+  gap: var(--gap-xs);
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+.override-actions button {
+  font-size: 0.72rem;
+  padding: 0.3rem 0.6rem;
+}
+
+.override-actions button.is-active {
+  border-color: var(--focus);
+  color: var(--paper);
+}
+
+.override-actions button.is-clear {
+  color: var(--paper-faint);
+}
+
+.schedule-modal-flag.is-error {
+  border-left-color: var(--neg);
+  color: var(--neg);
+}
+
+.schedule-modal-flags {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-xs);
+}
+
+.schedule-modal-flag {
+  font-size: 0.82rem;
+  color: var(--paper-dim);
+  border-left: 2px solid var(--rule-strong);
+  padding-left: var(--gap-sm);
+}
+
+/* A charge that sits outside the schedule's own tolerance — the reason the
+   card shows a median and not an average. */
+.detail-amount.is-outlier {
+  text-decoration: underline dotted currentColor;
+  text-underline-offset: 3px;
+}
+
 /* --- Transaction detail popup -------------------------------------------- */
 
 /* Wide enough for two directions side by side; narrowed back down by
@@ -1841,4 +2289,24 @@ input:disabled {
 .spectrum-seg.is-clickable:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
+}
+
+/* --- PayPal detail in the review queue ------------------------------------ */
+
+/* Comdirect prints no payee on a PayPal line, so what the export recorded is
+   the only context a reviewer has. It sits between the booking text and the
+   category form, where the decision is actually made. */
+.paypal-facts {
+  margin-top: var(--gap-md);
+}
+
+.paypal-facts dd {
+  font-size: 0.85rem;
+}
+
+/* The message is the one field that usually decides the category, so it is the
+   one field allowed to look like prose rather than a record. Scoped past
+   `.transaction-facts dd`, which would otherwise out-rank a bare class. */
+.paypal-facts .paypal-message {
+  color: var(--paper);
 }

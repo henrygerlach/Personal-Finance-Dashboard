@@ -1,10 +1,78 @@
 {% extends "base.html" %}
 
+{#
+  The page answers one question first: what am I committed to right now.
+
+  So the split that leads is not income against spending but *live* against
+  *finished*. Everything still running is laid out as cards, largest
+  commitment first, in two columns by direction; schedules that have stopped
+  are real history but no longer a commitment, so they collapse into a
+  disclosure at the foot of the page.
+#}
+
+{% macro schedule_card(item, share) %}
+<article class="schedule-card is-clickable"
+         data-schedule="{{ item.id }}"
+         tabindex="0" role="button"
+         aria-label="{{ item.merchant }} — open charge history">
+  <div class="schedule-head">
+    <span class="cat-swatch" data-category="{{ item.minor }}"></span>
+    <h3 class="schedule-name">{{ item.merchant }}</h3>
+    {% if item.status == "due" %}
+    <span class="schedule-flag is-due">Overdue</span>
+    {% endif %}
+    {# The old price and the month it changed are in the popup, formatted the
+       way every other figure on the page is. #}
+    {% if item.price_change %}
+    <span class="schedule-flag is-price">
+      {{ "Price up" if item.price_change.to|abs > item.price_change['from']|abs
+         else "Price down" }}
+    </span>
+    {% endif %}
+  </div>
+
+  <p class="schedule-amount"
+     data-monthly="{{ item.monthly_equivalent }}"
+     data-annual="{{ item.annual_equivalent }}">
+    {{ "%.2f"|format(item.monthly_equivalent) }} €
+  </p>
+
+  <p class="schedule-billed">
+    {% if item.period != "monthly" %}
+    billed <span data-money="{{ item.amount|abs }}"></span> {{ item.period }}
+    {% else %}
+    every month on the {{ item.typical_day }}
+    {% endif %}
+  </p>
+
+  {# A bar against the column's largest commitment: the ranking has to be
+     visible before any number is read. #}
+  <div class="schedule-bar" aria-hidden="true">
+    <span data-category="{{ item.minor }}" style="width: {{ share }}%"></span>
+  </div>
+
+  <p class="schedule-next">
+    {% if item.days_away < 0 %}
+    <span class="is-late">
+      expected {{ -item.days_away }}
+      {{ "day" if item.days_away == -1 else "days" }} ago</span>
+    {% elif item.days_away == 0 %}
+    due today
+    {% else %}
+    next in {{ item.days_away }}
+    {{ "day" if item.days_away == 1 else "days" }}
+    {% endif %}
+    · <span data-day="{{ item.next_expected }}">{{ item.next_expected }}</span>
+    · seen {{ item.occurrences }}×
+  </p>
+</article>
+{% endmacro %}
+
 {% block content %}
 <section class="hero">
   <div class="hero-text">
     <span class="eyebrow">Detected from the history</span>
-    <h1>Recurring payments</h1>
+    <h1>What repeats</h1>
     <p class="subtitle">
       Same merchant, similar amount, regular interval, at least three times.
       Nothing here is a category — whether a payment repeats is a property of
@@ -12,53 +80,198 @@
     </p>
   </div>
   <div class="hero-stat">
-    <span class="hero-stat-value">{{ overview.count }}</span>
-    <span class="label">schedules found</span>
+    <span class="hero-stat-value">{{ overview.active_count }}</span>
+    <span class="label">still running</span>
   </div>
 </section>
 
 <div class="chart-container stagger">
-  <section class="section-block">
-    <div class="balance-strip">
-      <div class="balance-card">
-        <h4>Recurring out, per month</h4>
-        <p class="balance-amount" data-money="{{ overview.monthly_expense }}">
-          {{ "%.2f"|format(overview.monthly_expense) }} €
-        </p>
+  {% if overview.count or overview.dismissed %}
+  <section class="section-block" aria-labelledby="committed-title">
+    <div class="panel-head">
+      <h2 class="panel-title" id="committed-title">Standing commitments</h2>
+      <div class="unit-toggle" role="group" aria-label="Show amounts per">
+        <button type="button" data-unit="monthly" class="is-active"
+                aria-pressed="true">Per month</button>
+        <button type="button" data-unit="annual"
+                aria-pressed="false">Per year</button>
       </div>
-      <div class="balance-card">
-        <h4>Recurring in, per month</h4>
-        <p class="balance-amount" data-money="{{ overview.monthly_income }}">
-          {{ "%.2f"|format(overview.monthly_income) }} €
-        </p>
+    </div>
+
+    <div class="headline-strip">
+      <div class="headline-card">
+        <h4>Going out</h4>
+        <p class="headline-amount"
+           data-monthly="{{ overview.monthly_expense }}"
+           data-annual="{{ overview.annual_expense }}"></p>
       </div>
-      <div class="balance-card">
-        <h4>Net, per month</h4>
-        <p class="balance-amount"
-           data-money="{{ overview.monthly_income + overview.monthly_expense }}">
-          {{ "%.2f"|format(overview.monthly_income + overview.monthly_expense) }} €
-        </p>
+      <div class="headline-card">
+        <h4>Coming in</h4>
+        <p class="headline-amount"
+           data-monthly="{{ overview.monthly_income }}"
+           data-annual="{{ overview.annual_income }}"></p>
+      </div>
+      <div class="headline-card is-total">
+        <h4>Net</h4>
+        <p class="headline-amount"
+           data-monthly="{{ overview.monthly_income + overview.monthly_expense }}"
+           data-annual="{{ overview.annual_income + overview.annual_expense }}"></p>
       </div>
       {% if overview.transfer_count %}
-      <div class="balance-card">
-        <h4>Recurring transfers</h4>
-        <p class="balance-amount" data-money="{{ overview.monthly_transfer }}">
-          {{ "%.2f"|format(overview.monthly_transfer) }} €
-        </p>
+      <div class="headline-card">
+        <h4>Transfers</h4>
+        <p class="headline-amount"
+           data-monthly="{{ overview.monthly_transfer }}"
+           data-annual="{{ overview.monthly_transfer * 12 }}"></p>
       </div>
       {% endif %}
     </div>
+
+    {% if overview.committed_share is not none %}
+    {% set pct = (overview.committed_share * 100)|round|int %}
+    <div class="commitment">
+      <div class="commitment-bar">
+        <span style="width: {{ [pct, 100]|min }}%"
+              class="{{ 'is-over' if pct > 100 }}"></span>
+      </div>
+      <p class="field-note">
+        {# A share that rounds to nothing is not nothing: shown as "0%" it
+           would read as "no commitments", which is the opposite of true. #}
+        <strong>{% if pct == 0 %}&lt;1{% else %}{{ pct }}{% endif %}%</strong>
+        of recurring income is committed before any discretionary spending.
+      </p>
+    </div>
+    {% endif %}
+
+    {% if overview.overdue_count or overview.price_change_count %}
+    <p class="field-note attention-note">
+      {% if overview.overdue_count %}
+      <strong>{{ overview.overdue_count }}</strong>
+      {{ "schedule is" if overview.overdue_count == 1 else "schedules are" }}
+      overdue — the next charge has not arrived.
+      {% endif %}
+      {% if overview.price_change_count %}
+      <strong>{{ overview.price_change_count }}</strong>
+      {{ "schedule has" if overview.price_change_count == 1
+         else "schedules have" }} changed price since starting.
+      {% endif %}
+    </p>
+    {% endif %}
+
     <p class="field-note">
-      Quarterly and yearly charges are shown at their monthly equivalent, so
-      an annual insurance premium can be compared with a streaming
+      Only schedules that are still running are counted — a subscription
+      cancelled two years ago is history, not a commitment. Quarterly,
+      half-yearly and yearly charges are carried at their monthly equivalent,
+      so an annual insurance premium can be compared with a streaming
       subscription. Transfers — savings plans, money moved between your own
-      accounts — are listed below but counted separately: they are neither
-      income nor spending.
+      accounts — are listed separately: they are neither income nor spending.
     </p>
   </section>
 
-  {% if overview['items'] %}
-  <section class="section-block">
+  {% if overview.upcoming %}
+  <section class="section-block" aria-labelledby="upcoming-title">
+    <div class="panel-head">
+      <h2 class="panel-title" id="upcoming-title">
+        Next {{ overview.upcoming_days }} days
+      </h2>
+      {# What "now" means has to be said: statements arrive in batches, so the
+         window starts at the end of the imported history, not at today. #}
+      <span class="spectrum-caption">
+        {{ overview.upcoming|length }} expected from
+        <span data-day="{{ overview.reference_date }}">
+          {{ overview.reference_date }}</span>, the end of the history
+      </span>
+    </div>
+
+    {% if overview.days_behind >= 3 %}
+    <p class="field-note attention-note">
+      The history ends <strong>{{ overview.days_behind }} days</strong> ago, so
+      every date here counts from then and anything charged since is not
+      loaded yet. Upload a fresh statement to bring it up to date.
+    </p>
+    {% endif %}
+    <ol class="upcoming-strip">
+      {% for item in overview.upcoming %}
+      <li class="upcoming-stop is-clickable {{ 'is-late' if item.days_away < 0 }}"
+          data-schedule="{{ item.id }}" tabindex="0" role="button">
+        <span class="upcoming-when" data-day="{{ item.next_expected }}">
+          {{ item.next_expected }}
+        </span>
+        <span class="upcoming-name">
+          <span class="cat-swatch" data-category="{{ item.minor }}"></span>
+          {{ item.merchant }}
+        </span>
+        <span class="upcoming-amount" data-money="{{ item.amount }}"></span>
+      </li>
+      {% endfor %}
+    </ol>
+  </section>
+  {% endif %}
+
+  <div class="schedule-columns">
+    <section class="schedule-column" aria-labelledby="outgoing-title">
+      <div class="panel-head">
+        <h2 class="panel-title" id="outgoing-title">Money going out</h2>
+        <span class="spectrum-caption">{{ overview.outgoing|length }}</span>
+      </div>
+      {% if overview.outgoing %}
+      {% set out_max = overview.outgoing
+         |map(attribute="monthly_equivalent")|map("abs")|max %}
+      <div class="schedule-list">
+        {% for item in overview.outgoing %}
+        {{ schedule_card(item, (item.monthly_equivalent|abs / out_max * 100)|round(1)) }}
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="panel-text">No outgoing schedule is running.</p>
+      {% endif %}
+    </section>
+
+    <section class="schedule-column" aria-labelledby="incoming-title">
+      <div class="panel-head">
+        <h2 class="panel-title" id="incoming-title">Money coming in</h2>
+        <span class="spectrum-caption">{{ overview.incoming|length }}</span>
+      </div>
+      {% if overview.incoming %}
+      {% set in_max = overview.incoming
+         |map(attribute="monthly_equivalent")|map("abs")|max %}
+      <div class="schedule-list">
+        {% for item in overview.incoming %}
+        {{ schedule_card(item, (item.monthly_equivalent|abs / in_max * 100)|round(1)) }}
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="panel-text">No incoming schedule is running.</p>
+      {% endif %}
+    </section>
+  </div>
+
+  {% if overview.transfers %}
+  <section class="section-block schedule-quiet" aria-labelledby="transfers-title">
+    <div class="panel-head">
+      <h2 class="panel-title" id="transfers-title">Transfers and savings</h2>
+      <span class="spectrum-caption">{{ overview.transfers|length }}</span>
+    </div>
+    {% set transfer_max = overview.transfers
+       |map(attribute="monthly_equivalent")|map("abs")|max %}
+    <div class="schedule-list is-wide">
+      {% for item in overview.transfers %}
+      {{ schedule_card(item, (item.monthly_equivalent|abs / transfer_max * 100)|round(1)) }}
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  {% if overview.dismissed %}
+  <details class="ended-block">
+    <summary>
+      <span class="ended-count">{{ overview.dismissed|length }}</span>
+      {{ "schedule you dismissed" if overview.dismissed|length == 1
+         else "schedules you dismissed" }}
+      <span class="field-note">
+        — detection found a pattern and you said it was not one
+      </span>
+    </summary>
     <div class="table-scroll">
       <table class="recurring-table">
         <thead>
@@ -67,26 +280,21 @@
             <th>Category</th>
             <th>Every</th>
             <th class="numeric">Amount</th>
-            <th class="numeric">Per month</th>
             <th class="numeric">Seen</th>
             <th>Last</th>
           </tr>
         </thead>
         <tbody>
-          {% for item in overview['items'] %}
-          <tr>
+          {% for item in overview.dismissed %}
+          <tr class="is-clickable" data-schedule="{{ item.id }}"
+              tabindex="0" role="button">
             <td>{{ item.merchant }}</td>
             <td>
               <span class="cat-swatch" data-category="{{ item.minor }}"></span>
               {{ item.major }} / {{ item.minor }}
             </td>
             <td>{{ item.period }}</td>
-            <td class="numeric" data-money="{{ item.amount }}">
-              {{ "%.2f"|format(item.amount) }} €
-            </td>
-            <td class="numeric" data-money="{{ item.monthly_equivalent }}">
-              {{ "%.2f"|format(item.monthly_equivalent) }} €
-            </td>
+            <td class="numeric" data-money="{{ item.amount }}"></td>
             <td class="numeric">{{ item.occurrences }}</td>
             <td>{{ item.last_seen }}</td>
           </tr>
@@ -94,7 +302,54 @@
         </tbody>
       </table>
     </div>
-  </section>
+  </details>
+  {% endif %}
+
+  {% if overview.ended %}
+  <details class="ended-block">
+    <summary>
+      <span class="ended-count">{{ overview.ended|length }}</span>
+      {{ "schedule that stopped" if overview.ended|length == 1
+         else "schedules that stopped" }}
+      <span class="field-note">
+        — last charged before the schedule was due again
+      </span>
+    </summary>
+    <div class="table-scroll">
+      <table class="recurring-table">
+        <thead>
+          <tr>
+            <th>Merchant</th>
+            <th>Category</th>
+            <th>Every</th>
+            <th class="numeric">Amount</th>
+            <th class="numeric">Seen</th>
+            <th>First</th>
+            <th>Last</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in overview.ended %}
+          <tr class="is-clickable" data-schedule="{{ item.id }}"
+              tabindex="0" role="button">
+            <td>{{ item.merchant }}</td>
+            <td>
+              <span class="cat-swatch" data-category="{{ item.minor }}"></span>
+              {{ item.major }} / {{ item.minor }}
+            </td>
+            <td>{{ item.period }}</td>
+            <td class="numeric" data-money="{{ item.amount }}"></td>
+            <td class="numeric">{{ item.occurrences }}</td>
+            <td>{{ item.first_seen }}</td>
+            <td>{{ item.last_seen }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </details>
+  {% endif %}
+
   {% else %}
   <div class="panel-outline is-centered">
     <p class="panel-title">No schedules found</p>
@@ -106,16 +361,54 @@
   {% endif %}
 </div>
 
+{# Every card, strip stop and ended row opens this one popup, the way every
+   plot on the dashboard opens the transaction drill-down. #}
+<div id="schedule-modal" class="modal detail-modal" role="dialog"
+     aria-modal="true" aria-labelledby="schedule-title" hidden>
+  <div class="modal-content is-single" role="document">
+    <div class="modal-header">
+      <h2 id="schedule-title">
+        <span class="cat-swatch" id="schedule-swatch"></span>
+        <span id="schedule-heading"></span>
+      </h2>
+      <button class="icon-button" id="schedule-close" aria-label="Close">
+        &times;
+      </button>
+    </div>
+    <p class="field-note" id="schedule-summary"></p>
+    <div id="schedule-flags" class="schedule-modal-flags"></div>
+
+    {# Detection reads a pattern out of dates and amounts, so it can only
+       guess at the two things settled here: whether this is a schedule at
+       all, and whether it is still running. #}
+    <div class="override-bar">
+      <span class="label">Detection says</span>
+      <span id="schedule-verdict" class="override-verdict"></span>
+      <div class="override-actions">
+        <button type="button" class="ghost-button" data-decision="active">
+          Still running
+        </button>
+        <button type="button" class="ghost-button" data-decision="ended">
+          Has ended
+        </button>
+        <button type="button" class="ghost-button" data-decision="dismissed">
+          Not recurring
+        </button>
+        <button type="button" class="ghost-button is-clear" data-decision="">
+          Undo
+        </button>
+      </div>
+    </div>
+
+    <div class="detail-list" id="schedule-charges"></div>
+  </div>
+</div>
+
 <script>
-  // Colour each row's swatch from the shared palette, so the table reads with
-  // the same key as every chart.
-  (function () {
-    if (!window.Theme) return;
-    document.querySelectorAll('.cat-swatch').forEach(function (swatch) {
-      swatch.style.background = window.Theme.categoryColor(
-        swatch.dataset.category
-      );
-    });
-  })();
+  window.RECURRING = {
+    items: {{ overview['items'] | tojson }},
+    referenceDate: {{ overview.reference_date | tojson }}
+  };
 </script>
+<script src="/static/recurring.js"></script>
 {% endblock %}

@@ -94,6 +94,7 @@ control, `.env` is not.
 | `mise run migrate` | migrate categories to the new taxonomy (`-- --dry-run` to preview) |
 | `mise run backfill` | classify transactions still holding a provisional category |
 | `mise run repair-refunds` | re-file transactions whose category disagrees with their direction |
+| `mise run migrate-merchant-directions` | give every merchant cache entry the direction it speaks for (`-- --dry-run`) |
 | `mise run eval` | score the classifier against the hand-made categories |
 | `mise run import-paypal` | store PayPal activity exports (`-- paypal_data/`) |
 | `mise run resolve-paypal` | re-file PayPal lines whose payee the export recovered (`-- --dry-run`) |

@@ -52,6 +52,19 @@ COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
         "reference txn id",
     ),
     "item_title": ("artikelbezeichnung", "item title"),
+    # The two sides of the payment and whatever was written on it. None of
+    # these carry any matching weight — they exist so a person reviewing a
+    # transaction can see who was paid and what for, which is the whole
+    # context a person-to-person payment has.
+    "sender": ("absender e-mail-adresse", "from email address"),
+    "receiver": (
+        "empfänger e-mail-adresse",
+        "empfanger e-mail-adresse",
+        "empfänger-e-mail-adresse",
+        "to email address",
+    ),
+    "subject": ("betreff", "subject"),
+    "note": ("hinweis", "note"),
 }
 
 #: Columns without which a file cannot be interpreted at all. ``name`` is not
@@ -80,6 +93,12 @@ class PayPalRow:
     ``gross`` keeps PayPal's sign convention: negative leaves the PayPal
     balance, positive enters it. ``related_code`` points at the row this one
     belongs to and is the thread the ledger pulls to find a merchant.
+
+    ``sender``, ``receiver``, ``subject`` and ``note`` are context for a
+    person reading the transaction, never evidence for a match. They are
+    frequently empty — PayPal fills them only when the payer wrote something
+    or the account settings expose the addresses — so every reader has to
+    treat an empty string as ordinary rather than as a fault.
     """
 
     code: str
@@ -91,6 +110,10 @@ class PayPalRow:
     gross: float
     related_code: str
     item_title: str
+    sender: str = ""
+    receiver: str = ""
+    subject: str = ""
+    note: str = ""
 
 
 # --- Scalars -----------------------------------------------------------------
@@ -293,6 +316,10 @@ def parse_export(payload: bytes | str) -> list[PayPalRow]:
                 gross=0.0 if gross is None else gross,
                 related_code=cell(row, "related_code"),
                 item_title=cell(row, "item_title"),
+                sender=cell(row, "sender"),
+                receiver=cell(row, "receiver"),
+                subject=cell(row, "subject"),
+                note=cell(row, "note"),
             )
         )
     return records
