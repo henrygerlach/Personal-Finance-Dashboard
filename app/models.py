@@ -47,6 +47,15 @@ OVERRIDE_ENDED = "ended"  # stopped, whatever the last charge says
 
 OVERRIDE_DECISIONS = frozenset({OVERRIDE_DISMISSED, OVERRIDE_ACTIVE, OVERRIDE_ENDED})
 
+# What a hand-made decision can say about a transaction the trip suggester
+# offered. There are only two answers, and the second one has to be storable:
+# saying "no, that Amazon order in the trip window was not the holiday" is a
+# decision, and it has to survive so the suggester stops asking.
+TRIP_INCLUDED = "included"
+TRIP_EXCLUDED = "excluded"
+
+TRIP_DECISIONS = frozenset({TRIP_INCLUDED, TRIP_EXCLUDED})
+
 
 class Transaction(Document):
     """Bank transaction record."""
@@ -399,3 +408,140 @@ class RecurringOverride(Document):
                 name="merchant_period",
             )
         ]
+
+
+class Trip(Document):
+    """
+    One journey, as a container for spending rather than a date filter.
+
+    A trip's costs are not contained in its dates: flights are bought months
+    ahead, a card payment abroad reaches the bank a week after the flight
+    home, and somebody settles their share of the house in the autumn. So the
+    dates stored here are not what decides membership — they only tell
+    :mod:`app.trips` where to look for transactions worth asking about. What
+    actually belongs to the trip is the set of :class:`TripAssignment`
+    records, every one of them made by hand.
+    """
+
+    name: str = Field(..., description="What the trip is called, e.g. 'Lisbon'.")
+    destination: Optional[str] = Field(
+        None, description="Where it went, for listing and for the reader's memory."
+    )
+    start_date: datetime = Field(..., description="First day of the trip, inclusive.")
+    end_date: datetime = Field(..., description="Last day of the trip, inclusive.")
+    budget: Optional[float] = Field(
+        None,
+        description=(
+            "What the trip was meant to cost, as a positive amount. Optional: "
+            "a trip with no budget is still worth totalling."
+        ),
+    )
+    notes: Optional[str] = Field(None, description="Anything the dates do not say.")
+    split_ways: int = Field(
+        1,
+        description=(
+            "How many people the whole journey was shared between. 1 means it "
+            "was not shared. Kept here rather than written onto every "
+            "assignment because it is a fact about the trip, not about any "
+            "one payment: rewriting 52 shares to say 'we split everything' "
+            "would collide with the shares set by hand and could not be "
+            "undone. It multiplies with an assignment's own share, which "
+            "answers the different question of whether one payment covered "
+            "somebody who is not on this trip's books."
+        ),
+    )
+    created_at: datetime = Field(
+        default_factory=datetime.utcnow, description="When the trip was created."
+    )
+
+    class Settings:
+        name = "trips"
+        indexes = [
+            # The listing is newest first, and every trip page reads its own
+            # window out of the history.
+            IndexModel([("start_date", ASCENDING)], name="start_date")
+        ]
+
+
+class TripAssignment(Document):
+    """
+    One hand-made decision about whether a transaction belongs to a trip.
+
+    Kept out of :class:`Transaction` on purpose. Transactions are rewritten by
+    re-import, re-classification and the repair scripts; a decision the user
+    made must not be riding along in that blast radius, for the same reason
+    :class:`RecurringOverride` is its own collection.
+
+    ``TRIP_EXCLUDED`` matters as much as ``TRIP_INCLUDED``. The suggester
+    proposes from a window, so it will keep proposing the same weekly grocery
+    shop that happened to fall inside the trip dates until it is told once
+    that the answer is no.
+
+    A transaction belongs to at most one trip. Two trips counting the same
+    flight would each be individually plausible and jointly a lie, so the
+    service moves an assignment rather than letting a second one be written.
+    """
+
+    trip_id: str = Field(..., description="Id of the trip this decision is about.")
+    transaction_id: str = Field(..., description="Id of the transaction decided on.")
+    decision: str = Field(..., description=f"One of {sorted(TRIP_DECISIONS)}.")
+    share: float = Field(
+        1.0,
+        description=(
+            "The fraction of the amount this trip owns, between 0 and 1. One "
+            "booking often covers people who are not on this trip's books — "
+            "two flights on one card, a house split four ways — and the whole "
+            "amount would overstate the trip while deleting it understates it."
+        ),
+    )
+    decided_at: datetime = Field(
+        default_factory=datetime.utcnow, description="When this was last written."
+    )
+
+    class Settings:
+        name = "trip_assignments"
+        indexes = [
+            # One decision per transaction per trip. The service also enforces
+            # one *inclusion* across all trips, which no index can express.
+            IndexModel(
+                [("trip_id", ASCENDING), ("transaction_id", ASCENDING)],
+                unique=True,
+                name="trip_transaction",
+            ),
+            IndexModel([("transaction_id", ASCENDING)], name="transaction"),
+        ]
+
+
+class DismissedTripProposal(Document):
+    """
+    A stretch of history the detector proposed as a trip and the user refused.
+
+    Detection is recomputed from scratch on every page load — a new import can
+    turn two clusters into one, so nothing about a proposal is worth storing.
+    A refusal is the exception: without it the same wrongly-flagged week of
+    online shopping is proposed again after every upload, forever.
+
+    Keyed on the first foreign charge in the cluster rather than on its dates,
+    which move as more of the history arrives. This is the same reasoning as
+    :class:`RecurringOverride`, which keys on what makes a run distinct rather
+    than on any identity the run itself carries.
+    """
+
+    anchor_id: str = Field(
+        ...,
+        description=(
+            "Id of the first foreign charge in the refused cluster, which is "
+            "what identifies the same proposal on a later run."
+        ),
+    )
+    start_date: datetime = Field(
+        ..., description="The window that was refused, for listing it back."
+    )
+    end_date: datetime = Field(..., description="See ``start_date``.")
+    dismissed_at: datetime = Field(
+        default_factory=datetime.utcnow, description="When it was refused."
+    )
+
+    class Settings:
+        name = "dismissed_trip_proposals"
+        indexes = [IndexModel([("anchor_id", ASCENDING)], unique=True, name="anchor")]

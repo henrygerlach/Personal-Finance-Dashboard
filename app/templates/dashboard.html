@@ -152,5 +152,5 @@
   window.RENDER_BALANCES = {{ render_balance_section | tojson }};
 </script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
-<script src="/static/dashboard.js"></script>
+<script src="{{ static_url('dashboard.js') }}"></script>
 {% endblock %}

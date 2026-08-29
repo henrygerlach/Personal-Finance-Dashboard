@@ -1,0 +1,439 @@
+{% extends "base.html" %}
+
+{#
+  One trip.
+
+  The page is ordered the way the question is actually asked: what did it
+  cost, what is that made of, and then — at the foot, where the work is —
+  which of the things around these dates were part of it.
+
+  The queue is the honest half of the feature. Detection can propose from
+  three windows and rank them, but only the traveller knows whether the
+  bookshop three days before departure was a holiday read or a Tuesday.
+#}
+
+{% set summary = trip.summary %}
+
+{% macro amount(value, tone="") %}
+<span data-amount="{{ value }}" class="{{ tone }}"></span>
+{% endmacro %}
+
+{% macro queue_row(item) %}
+<div class="trip-queue-row {{ 'is-dismissed' if item.dismissed }}"
+     data-transaction="{{ item.id }}">
+  <span class="detail-date">{{ item.date }}</span>
+  <span class="detail-name">
+    {{ item.merchant }}
+    <span class="detail-tag" data-edge="{{ item.minor }}">{{ item.minor }}</span>
+    {% if item.suggested %}<span class="trip-reason">{{ item.reason }}</span>{% endif %}
+    {% if item.claimed_by %}
+    <span class="trip-claim">already counted in {{ item.claimed_by }}</span>
+    {% endif %}
+  </span>
+  <span class="detail-amount num" data-amount="{{ item.amount }}"
+        data-tone="sign"></span>
+  <span class="trip-queue-actions">
+    <button type="button" class="ghost-button is-small" data-decision="included">
+      {{ "Add anyway" if item.claimed_by else "It was the trip" }}
+    </button>
+    {% if item.dismissed %}
+    <button type="button" class="ghost-button is-small is-clear" data-decision="">
+      Undo
+    </button>
+    {% else %}
+    <button type="button" class="ghost-button is-small" data-decision="excluded">
+      No
+    </button>
+    {% endif %}
+  </span>
+</div>
+{% endmacro %}
+
+{% set phase_titles = {
+  "booked": "Booked before you left",
+  "during": "Charged while you were away",
+  "settled": "Landed after you got back"
+} %}
+{# What the unticked remainder of each window is, in three words. The
+   headings carry the rest; the reasoning lives in app/trips.py. #}
+{% set phase_rest = {
+  "booked": "as likely an earlier trip",
+  "during": "schedules and transfers",
+  "settled": "ordinary life resuming"
+} %}
+
+{% block content %}
+<section class="hero">
+  <div class="hero-text">
+    <span class="eyebrow">
+      <a href="/trips" class="trip-back">Trips</a>
+      {% if trip.destination %} · {{ trip.destination }}{% endif %}
+    </span>
+    <h1>{{ trip.name }}</h1>
+    <p class="subtitle">
+      <span data-day="{{ trip.start_date }}">{{ trip.start_date }}</span>
+      to
+      <span data-day="{{ trip.end_date }}">{{ trip.end_date }}</span>
+      · {{ summary.days }} {{ "day" if summary.days == 1 else "days" }}
+      {% if trip.notes %} · {{ trip.notes }}{% endif %}
+    </p>
+  </div>
+</section>
+
+<div class="chart-container stagger">
+  <section class="section-block" aria-labelledby="cost-title">
+    <div class="panel-head">
+      <h2 class="panel-title" id="cost-title">What it cost</h2>
+      {# One number for the whole journey, rather than the per-payment Split
+         further down. They answer different questions and multiply: a booking
+         you only half owned, on a trip you then shared, leaves you a quarter. #}
+      <div class="split-toggle" role="group" aria-label="Split the trip total">
+        <span class="label">Split</span>
+        {% for ways in [1, 2, 3, 4] %}
+        <button type="button" data-ways="{{ ways }}"
+                class="{{ 'is-active' if trip.split_ways == ways }}"
+                aria-pressed="{{ 'true' if trip.split_ways == ways else 'false' }}">
+          {{ "Whole" if ways == 1 else "÷" ~ ways }}
+        </button>
+        {% endfor %}
+        <input type="number" class="split-other" min="1" max="50" step="1"
+               placeholder="…"
+               value="{{ trip.split_ways if trip.split_ways > 4 else '' }}"
+               aria-label="Split between how many people" />
+      </div>
+    </div>
+
+    {% if summary.split_ways > 1 %}
+    <p class="field-note attention-note" id="split-note">
+      Your share, one of {{ summary.split_ways }} ·
+      {{ amount(summary.full_net) }} altogether
+    </p>
+    {% endif %}
+
+    <div class="headline-strip">
+      <div class="headline-card">
+        {# Every figure in this strip is already your share once a split is
+           on, so relabelling only the first one would imply the rest are not.
+           The note above the strip says it once, for all of them. #}
+        <h4>Spent</h4>
+        <p class="headline-amount" id="trip-spend"
+           data-amount="{{ summary.spend }}"></p>
+      </div>
+      <div class="headline-card">
+        <h4>Came back</h4>
+        {# Coloured only when there is something to colour: a green zero reads
+           as money received. #}
+        <p class="headline-amount {{ 'is-positive' if summary.refunds }}"
+           id="trip-refunds" data-amount="{{ summary.refunds }}"></p>
+      </div>
+      <div class="headline-card is-total">
+        <h4>Net</h4>
+        <p class="headline-amount" id="trip-net"
+           data-amount="{{ summary.net }}"></p>
+      </div>
+      <div class="headline-card">
+        <h4>Per day</h4>
+        <p class="headline-amount" id="trip-per-day"
+           data-amount="{{ summary.per_day }}"></p>
+      </div>
+    </div>
+
+    {% if trip.budget %}
+    {% set pct = (trip.budget_share * 100)|round|int %}
+    <div class="commitment">
+      <div class="commitment-bar">
+        <span style="width: {{ [pct, 100]|min }}%"
+              class="{{ 'is-over' if pct > 100 }}"></span>
+      </div>
+      <p class="field-note">
+        <strong>{{ pct }}%</strong> of a
+        {{ amount(trip.budget) }} budget
+        {%- if pct > 100 %} — over by {{ amount((summary.net - trip.budget)|round(2)) }}
+        {%- else %} — {{ amount((trip.budget - summary.net)|round(2)) }} left
+        {%- endif %}.
+      </p>
+    </div>
+    {% endif %}
+
+    {# The things about this total that are not obvious, said once, here.
+       Every one is deliberate and every one would otherwise look like a bug —
+       most of all the two kinds of transfer that are counted on a trip while
+       transfers are excluded everywhere else in the dashboard. #}
+    {% if summary.cash or summary.person_out or summary.excluded %}
+    <p class="field-note attention-note">
+      {# A caption, not a sentence: these explain figures that would look
+         wrong without them, and the reasoning behind each is in app/trips.py.
+         Money back from people needs no line — it is already the "came back"
+         card. #}
+      {%- if summary.cash %}{{ amount(summary.cash) }} cash{% endif -%}
+      {%- if summary.cash and summary.person_out %} · {% endif -%}
+      {%- if summary.person_out %}
+        {{- amount(summary.person_out) }} sent to people
+      {%- endif -%}
+      {%- if summary.cash or summary.person_out %} — counted as spending{% endif -%}
+      {%- if summary.excluded %}
+        {%- if summary.cash or summary.person_out %} · {% endif -%}
+        {{ amount(summary.excluded) }} of other transfers left out
+      {%- endif -%}
+    </p>
+    {% endif %}
+  </section>
+
+  {% if summary.categories %}
+  <section class="section-block" aria-labelledby="mix-title">
+    <div class="panel-head">
+      <h2 class="panel-title" id="mix-title">Where it went</h2>
+      <span class="spectrum-caption">click a band for the payments behind it</span>
+    </div>
+    <div class="spectrum">
+      {# The unfurl animation is added by trips.js after load, the way the
+         dashboard does it. Server-rendering the class leaves every band
+         parked at scaleX(0) — visible, but with no hit area, so the whole bar
+         stops being clickable. #}
+      <div class="spectrum-bar">
+        {% for row in summary.categories %}
+        <button type="button" class="spectrum-seg" data-category="{{ row.minor }}"
+                data-slice="{{ row.minor }}"
+                style="width: {{ (row.share * 100)|round(3) }}%"
+                aria-label="{{ row.minor }}">
+        </button>
+        {% endfor %}
+      </div>
+      <div class="spectrum-keys">
+        {% for row in summary.categories %}
+        <span class="spectrum-key">
+          <span class="option-swatch" data-category="{{ row.minor }}"></span>
+          <span class="legend-name">{{ row.minor }}</span>
+          <span class="spectrum-value" data-amount="{{ row.amount }}"></span>
+          <span class="spectrum-share">{{ (row.share * 100)|round(1) }}%</span>
+        </span>
+        {% endfor %}
+      </div>
+    </div>
+  </section>
+
+  {# The one section on the page that is not a card. Before, during and after
+     is a sequence in time, and three identical boxes throw away the only
+     thing that makes it mean anything — that a holiday's money is spread
+     across months while the holiday itself is a few days in the middle.
+     Drawn, the page argues its own premise instead of asserting it. #}
+  <section class="section-block" aria-labelledby="when-title">
+    <div class="panel-head">
+      <h2 class="panel-title" id="when-title">When it was paid</h2>
+      <span class="spectrum-caption" id="timeline-span"></span>
+    </div>
+    <figure class="timeline">
+      <div class="timeline-plot" id="timeline-plot">
+        {# The window paints first and the grid over it, so a month boundary
+           that falls inside a long trip is not swallowed by the band. #}
+        <div class="timeline-window" id="timeline-window"></div>
+        <div class="timeline-grid" id="timeline-grid"></div>
+        <div class="timeline-baseline"></div>
+        <div class="timeline-marks" id="timeline-marks"></div>
+      </div>
+      <figcaption class="timeline-legend" id="timeline-legend"></figcaption>
+    </figure>
+  </section>
+  {% endif %}
+
+  {% if trip.assigned %}
+  <section class="section-block" aria-labelledby="assigned-title">
+    <div class="panel-head">
+      <h2 class="panel-title" id="assigned-title">What is counted</h2>
+      <span class="spectrum-caption" id="trip-count">
+        {{ trip.assigned|length }} assigned</span>
+    </div>
+    <div class="detail-list trip-assigned">
+      {% for item in trip.assigned %}
+      <div class="trip-queue-row is-assigned" data-transaction="{{ item.id }}">
+        <span class="detail-date">{{ item.date }}</span>
+        <span class="detail-name">
+          {{ item.merchant }}
+          <span class="detail-tag" data-edge="{{ item.minor }}">
+            {{ item.minor }}</span>
+          {% if item.share != 1.0 %}
+          <span class="trip-reason">
+            {{ (item.share * 100)|round|int }}% of it is this trip's
+          </span>
+          {% endif %}
+          {% if not item.counted %}
+          <span class="trip-reason">a transfer — assigned, but not in the total</span>
+          {% endif %}
+        </span>
+        <span class="detail-amount num" data-amount="{{ item.amount * item.share }}"
+              data-tone="sign"></span>
+        <span class="trip-queue-actions">
+          {# A share is the answer to "one booking, two travellers". Typed
+             rather than picked from a list, because the real splits are
+             halves, thirds and quarters and no list is ever the right one.
+
+             Hidden behind a button until it is wanted. Almost every payment
+             belongs to its trip whole, and a number box standing open on
+             every row is a control nobody can name — which is exactly what
+             it turned out to be. #}
+          {% if item.share == 1.0 %}
+          <button type="button" class="ghost-button is-small trip-split-open">
+            Split
+          </button>
+          {% endif %}
+          <span class="trip-split" {{ "hidden" if item.share == 1.0 }}>
+            <input type="number" class="trip-share" min="1" max="100" step="1"
+                   value="{{ (item.share * 100)|round|int }}"
+                   aria-label="Percent of this payment this trip owns" />
+            <span class="trip-share-unit" aria-hidden="true">%</span>
+          </span>
+          <button type="button" class="ghost-button is-small is-clear"
+                  data-decision="">Remove</button>
+        </span>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  <section class="section-block" aria-labelledby="queue-title">
+    <div class="panel-head">
+      <h2 class="panel-title" id="queue-title">Was this the trip?</h2>
+      {% if trip.suggested_count %}
+      <button type="button" class="ghost-button" id="trip-accept-all">
+        Add the {{ trip.suggested_count }} ticked
+      </button>
+      {% endif %}
+    </div>
+
+    {% if trip.candidate_count %}
+    {% for phase in ["booked", "during", "settled"] %}
+    {% set items = trip.candidates[phase] %}
+    {% if items %}
+    {% set ticked = items|selectattr("suggested")|list %}
+    {% set rest = items|rejectattr("suggested")|list %}
+    <div class="trip-phase">
+      <h3 class="trip-phase-title">
+        {{ phase_titles[phase] }}
+        <span class="spectrum-caption">
+          {% if ticked %}{{ ticked|length }} ticked of {% endif %}{{ items|length }}
+        </span>
+      </h3>
+      {% for item in ticked %}
+      {{ queue_row(item) }}
+      {% endfor %}
+
+      {% if rest %}
+      <details class="trip-weak">
+        <summary>
+          {{ rest|length }} more in this window
+          <span class="field-note">— {{ phase_rest[phase] }}</span>
+        </summary>
+        {% for item in rest %}
+        {{ queue_row(item) }}
+        {% endfor %}
+      </details>
+      {% endif %}
+    </div>
+    {% endif %}
+    {% endfor %}
+    {% else %}
+    <p class="panel-text">Nothing left to decide.</p>
+    {% endif %}
+  </section>
+
+  <section class="section-block" aria-labelledby="search-title">
+    <div class="panel-head">
+      <h2 class="panel-title" id="search-title">Add something else</h2>
+      <span class="spectrum-caption">
+        for anything the three windows never reached
+      </span>
+    </div>
+    <div class="rules-search">
+      <input type="search" id="trip-search" class="rules-search-input"
+             placeholder="Search every transaction" autocomplete="off" />
+    </div>
+    <div class="detail-list" id="trip-search-results"></div>
+  </section>
+
+  <details class="ended-block">
+    <summary>
+      Trip settings
+      <span class="field-note">— dates, budget, and deleting the trip</span>
+    </summary>
+    <form method="post" action="/trips/{{ trip.id }}/edit" class="trip-form">
+      <div class="trip-form-grid">
+        <div class="form-group">
+          <label for="name-edit">Name</label>
+          <input type="text" id="name-edit" name="name" required maxlength="80"
+                 value="{{ trip.name }}" />
+        </div>
+        <div class="form-group">
+          <label for="destination-edit">Destination</label>
+          <input type="text" id="destination-edit" name="destination"
+                 maxlength="80" value="{{ trip.destination or '' }}" />
+        </div>
+        <div class="form-group">
+          <label for="start-edit">First day</label>
+          <input type="date" id="start-edit" name="start_date" required
+                 value="{{ trip.start_date }}" />
+        </div>
+        <div class="form-group">
+          <label for="end-edit">Last day</label>
+          <input type="date" id="end-edit" name="end_date" required
+                 value="{{ trip.end_date }}" />
+        </div>
+        <div class="form-group">
+          <label for="budget-edit">Budget</label>
+          <input type="number" id="budget-edit" name="budget" min="0" step="0.01"
+                 value="{{ trip.budget or '' }}" />
+        </div>
+        <div class="form-group is-wide">
+          <label for="notes-edit">Notes</label>
+          <input type="text" id="notes-edit" name="notes" maxlength="200"
+                 value="{{ trip.notes or '' }}" />
+        </div>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="primary-button">Save</button>
+      </div>
+    </form>
+
+    <form method="post" action="/trips/{{ trip.id }}/delete" class="trip-form"
+          id="trip-delete">
+      <div class="form-actions">
+        <button type="submit" class="ghost-button is-danger">
+          Delete this trip
+        </button>
+      </div>
+    </form>
+  </details>
+</div>
+
+{# The payments behind one band of the mix, in the same popup the dashboard
+   opens from every plot. #}
+<div id="slice-modal" class="modal detail-modal" role="dialog"
+     aria-modal="true" aria-labelledby="slice-title" hidden>
+  <div class="modal-content is-single" role="document">
+    <div class="modal-header">
+      <h2 id="slice-title">
+        <span class="cat-swatch" id="slice-swatch"></span>
+        <span id="slice-heading"></span>
+      </h2>
+      <button class="icon-button" id="slice-close" aria-label="Close">
+        &times;
+      </button>
+    </div>
+    <p class="field-note" id="slice-summary"></p>
+    <div class="detail-list" id="slice-rows"></div>
+  </div>
+</div>
+
+<script>
+  window.TRIP = {
+    id: {{ trip.id | tojson }},
+    start: {{ trip.start_date | tojson }},
+    end: {{ trip.end_date | tojson }},
+    assigned: {{ trip.assigned | tojson }},
+    categories: {{ summary.categories | tojson }},
+    byPhase: {{ summary.by_phase | tojson }},
+    splitWays: {{ summary.split_ways | tojson }}
+  };
+</script>
+<script src="{{ static_url('trips.js') }}"></script>
+{% endblock %}

@@ -26,6 +26,17 @@ MAJOR_INCOME = "Income"
 MAJOR_TRANSFER = "Transfers & Savings"
 MAJOR_UNCATEGORIZED = "Uncategorized"
 
+#: Named because the trip view has to treat it as spending. Everything under
+#: ``Transfers & Savings`` stays out of the expense totals, which is right for
+#: the dashboard — but cash taken out on holiday is the holiday's cost, and
+#: the spending it turned into never reaches the bank at all.
+MAJOR_TRAVEL = "Travel"
+MINOR_CASH_WITHDRAWAL = "Cash Withdrawal"
+#: Named for the same reason: settling up with the person who booked the house
+#: is what the trip cost you, even though moving money between two people is
+#: not spending in the dashboard's sense.
+MINOR_PERSON_TO_PERSON = "Person to Person"
+
 MINOR_NEEDS_REVIEW = "Needs Review"
 
 #: Where anything unclassifiable lands: an invalid pair from the model, a
@@ -91,7 +102,7 @@ CATEGORY_HIERARCHY: dict[str, list[str]] = {
         "Games",
         "Other Leisure",
     ],
-    "Travel": [
+    MAJOR_TRAVEL: [
         "Flights & Long-Distance",
         "Accommodation",
         "Package Tours & Bookings",
@@ -123,13 +134,13 @@ CATEGORY_HIERARCHY: dict[str, list[str]] = {
     ],
     "Transfers & Savings": [
         "Internal Transfer",
-        "Cash Withdrawal",
+        MINOR_CASH_WITHDRAWAL,
         "Cash Deposit",
         "Savings Contribution",
         "Investments",
         "Credit Card Payment",
         "Loan Repayment",
-        "Person to Person",
+        MINOR_PERSON_TO_PERSON,
     ],
     "Uncategorized": [MINOR_NEEDS_REVIEW],
 }

@@ -2,6 +2,8 @@
 API route handlers for the FastAPI application.
 """
 
+from datetime import datetime
+from pathlib import Path
 from typing import Annotated
 
 from beanie import PydanticObjectId
@@ -27,6 +29,7 @@ from app.services import (
     ComdirectBalanceService,
     RecurringService,
     ReviewService,
+    TripService,
 )
 
 logger = get_logger(__name__)
@@ -37,6 +40,44 @@ templates = Jinja2Templates(directory="app/templates")
 # Exposed to every template: the frontend derives its category colour palette
 # from this hierarchy instead of maintaining a parallel list of hex values.
 templates.env.globals["CATEGORY_HIERARCHY"] = NEW_CATEGORY_HIERARCHY
+
+#: Where the stylesheet and the page scripts live on disk.
+STATIC_ROOT = Path("app/static")
+
+
+def static_url(name: str) -> str:
+    """
+    A stylesheet or script URL that changes whenever the file does.
+
+    Starlette's StaticFiles sends an ETag and a Last-Modified date but no
+    Cache-Control, which leaves the browser free to apply its own heuristic —
+    and Chrome's is to serve the file from memory for the rest of the session
+    without revalidating. The effect is that an edit to a script silently does
+    not reach the page: the HTML is always fresh because it is rendered per
+    request, so the new markup arrives and the old code runs against it. A
+    figure whose markup is server-rendered and whose data is drawn by script
+    then comes up empty, which is exactly how this was found.
+
+    Stamping the file's modification time into the query string sidesteps the
+    heuristic entirely: a changed file is a different URL, and a URL the
+    browser has never seen cannot be served from its cache.
+
+    Args:
+        name: File name inside ``app/static``.
+
+    Returns:
+        The URL with a version stamp, or the bare path if the file is missing
+        — a missing asset is the server's problem to report, not something to
+        fail template rendering over.
+    """
+    try:
+        stamp = int((STATIC_ROOT / name).stat().st_mtime)
+    except OSError:
+        return f"/static/{name}"
+    return f"/static/{name}?v={stamp}"
+
+
+templates.env.globals["static_url"] = static_url
 # The rule pages are hidden from the navigation while the engine is off.
 templates.env.globals["RULES_ENABLED"] = settings.rules_enabled
 
@@ -245,6 +286,268 @@ async def clear_recurring_override(
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error))
     return {"status": "success", "cleared": cleared}
+
+
+# ============================================================================
+# Page Routes - Trips
+# ============================================================================
+
+
+def _trip_day(value: str, field: str) -> datetime:
+    """
+    One date from a form, as the datetime the trip window is measured in.
+
+    Raises:
+        HTTPException: The browser sent something that is not a date. The date
+            inputs make that unlikely, but a form post is a public surface.
+    """
+    try:
+        return datetime.strptime(value, "%Y-%m-%d")
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail=f"{field} is not a date")
+
+
+def _trip_budget(value: str | None) -> float | None:
+    """A budget from a form, or None where the field was left empty."""
+    if value is None or not str(value).strip():
+        return None
+    try:
+        return abs(float(str(value).replace(",", ".")))
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Budget is not an amount")
+
+
+@router.get("/trips", response_class=HTMLResponse)
+async def trips_page(request: Request) -> HTMLResponse:
+    """
+    Every trip, and what it cost.
+
+    A trip's spending is not contained in its dates — flights are bought
+    months ahead and card payments abroad settle after the flight home — so
+    what is totalled here is what was assigned by hand, never a date filter.
+    """
+    templates = get_templates()
+    return templates.TemplateResponse(
+        "trips.html",
+        {
+            "request": request,
+            "title": "Trips",
+            "active_path": "/trips",
+            **await nav_counts(),
+            "overview": await TripService.overview(),
+            # Detection runs on every load rather than on a button: a
+            # proposal is worthless once acted on, and the alternative is a
+            # stale list that has to be refreshed by hand.
+            "found": await TripService.proposals(),
+        },
+    )
+
+
+@router.post("/trips")
+async def create_trip(
+    name: Annotated[str, Form()],
+    start_date: Annotated[str, Form()],
+    end_date: Annotated[str, Form()],
+    destination: Annotated[str, Form()] = "",
+    budget: Annotated[str, Form()] = "",
+    notes: Annotated[str, Form()] = "",
+) -> RedirectResponse:
+    """Create a trip and go straight to it, where the review queue is."""
+    try:
+        trip = await TripService.create(
+            name=name,
+            start_date=_trip_day(start_date, "Start date"),
+            end_date=_trip_day(end_date, "End date"),
+            destination=destination,
+            budget=_trip_budget(budget),
+            notes=notes,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return RedirectResponse(url=f"/trips/{trip.id}", status_code=303)
+
+
+@router.post("/api/trips/proposals/{anchor_id}/dismiss")
+async def dismiss_trip_proposal(anchor_id: str) -> dict:
+    """
+    Refuse one detected trip, so it stops being proposed.
+
+    Detection is recomputed on every load, so without this the same wrongly
+    flagged week of online shopping would come back after every upload.
+    """
+    try:
+        dismissed = await TripService.dismiss_proposal(anchor_id)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return {"status": "success", "dismissed": dismissed}
+
+
+@router.post("/api/trips/proposals/{anchor_id}/restore")
+async def restore_trip_proposal(anchor_id: str) -> dict:
+    """Hand one refused proposal back to the detector."""
+    restored = await TripService.restore_proposal(anchor_id)
+    return {"status": "success", "restored": restored}
+
+
+@router.get("/trips/{trip_id}", response_class=HTMLResponse)
+async def trip_page(request: Request, trip_id: str) -> HTMLResponse:
+    """
+    One trip: what it cost, what is assigned to it, and what it may be missing.
+
+    The queue at the foot of the page is the whole point. Detection can only
+    propose from three windows around the dates — the booking lead-in, the
+    trip itself, the settlement tail — and which of those proposals is
+    actually the holiday is a question only the traveller can answer.
+    """
+    templates = get_templates()
+    try:
+        trip = await TripService.detail(trip_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    return templates.TemplateResponse(
+        "trip.html",
+        {
+            "request": request,
+            "title": trip["name"],
+            "active_path": "/trips",
+            **await nav_counts(),
+            "trip": trip,
+        },
+    )
+
+
+@router.post("/trips/{trip_id}/edit")
+async def edit_trip(
+    trip_id: str,
+    name: Annotated[str, Form()],
+    start_date: Annotated[str, Form()],
+    end_date: Annotated[str, Form()],
+    destination: Annotated[str, Form()] = "",
+    budget: Annotated[str, Form()] = "",
+    notes: Annotated[str, Form()] = "",
+) -> RedirectResponse:
+    """
+    Rewrite a trip.
+
+    Moving the dates re-runs the suggester and touches no assignment: a date
+    correction is not a retraction of a decision the user already made.
+    """
+    try:
+        await TripService.update(
+            trip_id,
+            name=name,
+            start_date=_trip_day(start_date, "Start date"),
+            end_date=_trip_day(end_date, "End date"),
+            destination=destination,
+            budget=_trip_budget(budget),
+            notes=notes,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return RedirectResponse(url=f"/trips/{trip_id}", status_code=303)
+
+
+@router.post("/trips/{trip_id}/delete")
+async def delete_trip(trip_id: str) -> RedirectResponse:
+    """Remove a trip and every decision made about it."""
+    try:
+        await TripService.delete(trip_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    return RedirectResponse(url="/trips", status_code=303)
+
+
+# ============================================================================
+# API Routes - Trips
+# ============================================================================
+
+
+@router.post("/api/trips/{trip_id}/assign")
+async def assign_to_trip(
+    trip_id: str,
+    transaction_id: Annotated[str, Form()],
+    decision: Annotated[str, Form()] = "",
+    share: Annotated[float, Form()] = 1.0,
+) -> dict:
+    """
+    Say whether one transaction belongs to this trip.
+
+    Form fields:
+        transaction_id: The transaction being decided on.
+        decision: ``included``, ``excluded``, or empty to undo the decision
+            and hand the transaction back to the suggester.
+        share: The fraction of the amount this trip owns, for a booking that
+            covers people who are not on its books.
+
+    Returns:
+        The trip's recomputed totals, so the page can update in place instead
+        of reloading after every decision in a queue.
+    """
+    try:
+        if decision:
+            result = await TripService.assign(
+                trip_id, transaction_id, decision, share=share
+            )
+        else:
+            result = await TripService.clear(trip_id, transaction_id)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return {"status": "success", **result}
+
+
+@router.post("/api/trips/{trip_id}/split")
+async def split_trip(
+    trip_id: str,
+    ways: Annotated[int, Form()],
+) -> dict:
+    """
+    Say how many people the whole journey was shared between.
+
+    One number for the trip, not a rewrite of every assignment: splitting a
+    trip is a fact about the trip, and setting it payment by payment would
+    overwrite the shares set by hand with no way back. Send ``ways=1`` to put
+    the whole total back.
+
+    Form fields:
+        ways: How many people shared the trip.
+
+    Returns:
+        The trip's recomputed totals.
+    """
+    try:
+        result = await TripService.set_split(trip_id, ways)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return {"status": "success", **result}
+
+
+@router.post("/api/trips/{trip_id}/accept-suggested")
+async def accept_trip_suggestions(trip_id: str) -> dict:
+    """Assign everything the suggester ticked, leaving the real questions."""
+    try:
+        written = await TripService.accept_suggested(trip_id)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return {"status": "success", "assigned": written}
+
+
+@router.get("/api/trips/{trip_id}/search")
+async def search_trip_transactions(
+    trip_id: str,
+    q: Annotated[str, Query(min_length=2)],
+) -> dict:
+    """
+    Find a transaction to attach by hand.
+
+    The suggester's windows are deliberately narrow, so there has to be a way
+    to reach the line they never offered — a deposit paid two years out, a
+    friend settling up long after the settlement tail closed.
+    """
+    try:
+        results = await TripService.search(trip_id, q)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    return {"status": "success", "query": q, "results": results}
 
 
 @router.get("/rules", response_class=HTMLResponse)

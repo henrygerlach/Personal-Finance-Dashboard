@@ -1,0 +1,318 @@
+{% extends "base.html" %}
+
+{#
+  Every trip, and what it cost.
+
+  The page states its own premise in the subtitle, because the number on each
+  card is not one anybody could arrive at by filtering the ledger on a pair of
+  dates — and a reader who assumes it is would mistrust it the first time a
+  flight bought in March showed up in a July holiday.
+#}
+
+{% macro trip_form(trip=None, submit="Create trip") %}
+{# One form for creating and for editing: the fields are the same question
+   either way, and two copies would drift. #}
+<div class="trip-form-grid">
+  <div class="form-group">
+    <label for="name-{{ trip.id if trip else 'new' }}">Name</label>
+    <input type="text" id="name-{{ trip.id if trip else 'new' }}" name="name"
+           required maxlength="80" placeholder="Lisbon"
+           value="{{ trip.name if trip else '' }}" />
+  </div>
+  <div class="form-group">
+    <label for="destination-{{ trip.id if trip else 'new' }}">Destination</label>
+    <input type="text" id="destination-{{ trip.id if trip else 'new' }}"
+           name="destination" maxlength="80" placeholder="Portugal"
+           value="{{ trip.destination or '' if trip else '' }}" />
+  </div>
+  <div class="form-group">
+    <label for="start-{{ trip.id if trip else 'new' }}">First day</label>
+    <input type="date" id="start-{{ trip.id if trip else 'new' }}"
+           name="start_date" required
+           value="{{ trip.start_date if trip else '' }}" />
+  </div>
+  <div class="form-group">
+    <label for="end-{{ trip.id if trip else 'new' }}">Last day</label>
+    <input type="date" id="end-{{ trip.id if trip else 'new' }}"
+           name="end_date" required
+           value="{{ trip.end_date if trip else '' }}" />
+  </div>
+  <div class="form-group">
+    <label for="budget-{{ trip.id if trip else 'new' }}">Budget (optional)</label>
+    <input type="number" id="budget-{{ trip.id if trip else 'new' }}"
+           name="budget" min="0" step="0.01" placeholder="1500"
+           value="{{ trip.budget or '' if trip else '' }}" />
+  </div>
+  <div class="form-group is-wide">
+    <label for="notes-{{ trip.id if trip else 'new' }}">Notes</label>
+    <input type="text" id="notes-{{ trip.id if trip else 'new' }}" name="notes"
+           maxlength="200" placeholder="Anything the dates do not say"
+           value="{{ trip.notes or '' if trip else '' }}" />
+  </div>
+</div>
+<div class="form-actions">
+  <button type="submit" class="primary-button">{{ submit }}</button>
+</div>
+{% endmacro %}
+
+{% block content %}
+<section class="hero">
+  <div class="hero-text">
+    <span class="eyebrow">Assigned by hand, not by date</span>
+    <h1>Trips</h1>
+    <p class="subtitle">
+      Flights months ahead, card payments that settle after the flight home,
+      somebody settling their share in the autumn. Dates only decide what gets
+      proposed.
+    </p>
+  </div>
+  {% if overview.count %}
+  <div class="hero-stat">
+    <span class="hero-stat-value" data-amount="{{ overview.total_net }}"></span>
+    <span class="label">
+      across {{ overview.count }} {{ "trip" if overview.count == 1 else "trips" }}
+    </span>
+  </div>
+  {% endif %}
+</section>
+
+<div class="chart-container stagger">
+  <details class="ended-block trip-new" {{ "open" if not overview.count }}>
+    <summary>
+      New trip
+    </summary>
+    <form method="post" action="/trips" class="trip-form">
+      {{ trip_form() }}
+    </form>
+  </details>
+
+  {% if found.count or found.dismissed_count %}
+  <section class="section-block" aria-labelledby="found-title">
+    <div class="panel-head">
+      <h2 class="panel-title" id="found-title">Trips found in your history</h2>
+      <span class="spectrum-caption">
+        {{ found.count }} to confirm
+      </span>
+    </div>
+
+    {# The dates are where the foreign charges start and stop, so a trip
+       usually began a day earlier; the fields are editable for that reason.
+       Detection cannot see a domestic trip or one paid in cash — the "New
+       trip" form above is for those. Neither point earns a paragraph on the
+       page; both are in app/trips.py. #}
+    {% if found.count %}
+    <p class="field-note is-prose is-quiet">
+      Where your card stopped reporting from home. Name one to keep it.
+    </p>
+    {% endif %}
+
+    {% for item in found.proposals %}
+    <article class="found-trip {{ 'is-thin' if item.strength != 'strong' }}"
+             data-proposal="{{ item.anchor_id }}">
+      <div class="found-head">
+        <h3 class="found-when">
+          <span data-day="{{ item.start_date }}">{{ item.start_date }}</span>
+          &ndash;
+          <span data-day="{{ item.end_date }}">{{ item.end_date }}</span>
+          <span class="found-year">{{ item.start_date[:4] }}</span>
+        </h3>
+        <span class="found-facts">
+          {{ item.days }} {{ "day" if item.days == 1 else "days" }} ·
+          {{ item.charges }} {{ "charge" if item.charges == 1 else "charges" }}
+          abroad · <span data-amount="{{ item.spend }}"></span>
+        </span>
+      </div>
+
+      {# The evidence, stated plainly. A currency is something a reader
+         recognises; a country code is Comdirect's own numbering and is shown
+         as a raw fact rather than dressed up as a place name we cannot
+         actually resolve. #}
+      <p class="found-evidence">
+        {% if item.currencies %}
+        charged in {{ item.currencies|join(", ") }}
+        {%- if item.countries %} · {% endif %}
+        {% endif %}
+        {% if item.countries %}
+        country {{ "codes" if item.countries|length > 1 else "code" }}
+        {{ item.countries|join(", ") }}
+        {% endif %}
+        {% if item.strength != "strong" %}
+        · <span class="found-flag">thin evidence</span>
+        {% endif %}
+      </p>
+
+      {% if item.merchants %}
+      <p class="found-merchants">{{ item.merchants|join(" · ") }}</p>
+      {% endif %}
+
+      {# Blank on purpose. The dates are what was detected and stay editable;
+         the name is what only the traveller knows, so the form cannot be
+         submitted without it. #}
+      <form method="post" action="/trips" class="found-form">
+        <input type="hidden" name="notes" value="" />
+        <div class="found-fields">
+          <div class="form-group">
+            <label for="name-{{ item.anchor_id }}">Name this trip</label>
+            <input type="text" id="name-{{ item.anchor_id }}" name="name"
+                   required maxlength="80" placeholder="Where did you go?" />
+          </div>
+          <div class="form-group">
+            <label for="dest-{{ item.anchor_id }}">Destination</label>
+            <input type="text" id="dest-{{ item.anchor_id }}" name="destination"
+                   maxlength="80" placeholder="Optional" />
+          </div>
+          <div class="form-group">
+            <label for="start-{{ item.anchor_id }}">First day</label>
+            <input type="date" id="start-{{ item.anchor_id }}" name="start_date"
+                   required value="{{ item.start_date }}" />
+          </div>
+          <div class="form-group">
+            <label for="end-{{ item.anchor_id }}">Last day</label>
+            <input type="date" id="end-{{ item.anchor_id }}" name="end_date"
+                   required value="{{ item.end_date }}" />
+          </div>
+          <div class="form-group">
+            <label for="budget-{{ item.anchor_id }}">Budget</label>
+            <input type="number" id="budget-{{ item.anchor_id }}" name="budget"
+                   min="0" step="0.01" placeholder="Optional" />
+          </div>
+        </div>
+        <div class="found-actions">
+          <button type="button" class="ghost-button is-small found-dismiss">
+            Not a trip
+          </button>
+          <button type="submit" class="primary-button">Create this trip</button>
+        </div>
+      </form>
+    </article>
+    {% endfor %}
+
+    {% if not found.count %}
+    <p class="panel-text">Nothing left to confirm.</p>
+    {% endif %}
+
+    {% if found.dismissed %}
+    <details class="ended-block">
+      <summary>
+        <span class="ended-count">{{ found.dismissed|length }}</span>
+        {{ "stretch you refused" if found.dismissed|length == 1
+           else "stretches you refused" }}
+
+      </summary>
+      <div class="detail-list">
+        {% for item in found.dismissed %}
+        <div class="trip-queue-row" data-proposal="{{ item.anchor_id }}">
+          <span class="detail-date">{{ item.start_date }}</span>
+          <span class="detail-name">
+            to {{ item.end_date }} · {{ item.charges }} charges abroad
+            <span class="trip-reason">
+              {{ item.currencies|join(", ") or "euros" }}
+              {%- if item.merchants %} · {{ item.merchants[0] }}{% endif %}
+            </span>
+          </span>
+          <span class="detail-amount num" data-amount="{{ item.spend }}"></span>
+          <span class="trip-queue-actions">
+            <button type="button" class="ghost-button is-small found-restore">
+              Put it back
+            </button>
+          </span>
+        </div>
+        {% endfor %}
+      </div>
+    </details>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  {% if overview.count %}
+  <section class="section-block" aria-labelledby="trips-title">
+    <div class="panel-head">
+      <h2 class="panel-title" id="trips-title">What each one cost</h2>
+      <span class="spectrum-caption">
+        <span data-amount="{{ overview.total_spend }}"></span> spent,
+        <span data-amount="{{ overview.total_net }}"></span> after refunds
+      </span>
+    </div>
+
+    <div class="trip-grid">
+      {% for trip in overview.trips %}
+      {% set summary = trip.summary %}
+      <a class="trip-card" href="/trips/{{ trip.id }}">
+        <div class="trip-card-head">
+          <h3 class="trip-name">{{ trip.name }}</h3>
+          {% if trip.destination %}
+          <span class="trip-where">{{ trip.destination }}</span>
+          {% endif %}
+        </div>
+
+        <p class="trip-dates">
+          <span data-day="{{ trip.start_date }}">{{ trip.start_date }}</span>
+          &ndash;
+          <span data-day="{{ trip.end_date }}">{{ trip.end_date }}</span>
+          · {{ summary.days }} {{ "day" if summary.days == 1 else "days" }}
+        </p>
+
+        <p class="trip-amount" data-amount="{{ summary.net }}"></p>
+        {# A card showing half of what a trip cost has to say so, or it simply
+           reads as a cheaper holiday than it was. #}
+        {% if summary.split_ways > 1 %}
+        <p class="trip-meta is-quiet">
+          your share of {{ summary.split_ways }} ·
+          <span data-amount="{{ summary.full_net }}"></span> altogether
+        </p>
+        {% endif %}
+
+        {% if summary.count %}
+        <p class="trip-meta">
+          <span data-amount="{{ summary.per_day }}"></span> a day
+          {% if summary.refunds %}
+          · <span data-amount="{{ summary.refunds }}"></span> came back
+          {% endif %}
+          · {{ summary.count }}
+          {{ "transaction" if summary.count == 1 else "transactions" }}
+        </p>
+
+        {# The mix, not just the total: two trips of the same size are
+           different trips if one is all flights and the other all restaurants. #}
+        {% if summary.categories %}
+        <div class="trip-mix" aria-hidden="true">
+          {% for row in summary.categories[:6] %}
+          <span data-category="{{ row.minor }}"
+                style="width: {{ (row.share * 100)|round(2) }}%"
+                title="{{ row.minor }}"></span>
+          {% endfor %}
+        </div>
+        <p class="trip-meta is-quiet">
+          mostly {{ trip.top_category }}
+        </p>
+        {% endif %}
+
+        {% if trip.budget %}
+        {% set pct = (trip.budget_share * 100)|round|int %}
+        <div class="commitment-bar trip-budget">
+          <span style="width: {{ [pct, 100]|min }}%"
+                class="{{ 'is-over' if pct > 100 }}"></span>
+        </div>
+        <p class="trip-meta is-quiet">
+          {{ pct }}% of a <span data-amount="{{ trip.budget }}"></span> budget
+        </p>
+        {% endif %}
+        {% else %}
+        <p class="trip-meta is-quiet">Nothing assigned yet.</p>
+        {% endif %}
+      </a>
+      {% endfor %}
+    </div>
+  </section>
+  {% else %}
+  <div class="panel-outline is-centered">
+    <p class="panel-title">No trips yet</p>
+    <p class="panel-text">
+      Name one and give it the dates you travelled.
+    </p>
+  </div>
+  {% endif %}
+</div>
+
+<script src="{{ static_url('trips.js') }}"></script>
+{% endblock %}

@@ -217,6 +217,45 @@
     return date.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
   }
 
+  /**
+   * Where to put the zero line in a two-directional bar figure, and how tall
+   * the bars may be.
+   *
+   * Both the trip timeline and the recurring month dial draw spending rising
+   * from a line and money coming in hanging below it, to one shared scale so
+   * the two directions stay comparable. Where that line belongs depends on
+   * the data: a trip with no refunds should give the whole height to its
+   * spending, while one that got half its money back needs the line near the
+   * middle. Fixing it meant a single large refund was drawn straight through
+   * the bottom of the plot, and pinning it to the middle meant one small
+   * refund wasted half the figure.
+   *
+   * The line is placed so that the tallest bar on each side lands exactly on
+   * its own margin, which is the only position where neither side is clipped
+   * and no space is wasted.
+   *
+   * @param {number} up Largest magnitude drawn above the line.
+   * @param {number} down Largest magnitude drawn below it.
+   * @returns {{baseline: number, scale: number}} The line's distance from the
+   *   bottom of the plot, and the height of a full-magnitude bar — both as
+   *   percentages of the plot's height.
+   */
+  function baselineFor(up, down) {
+    // Heights go by square root, so one large payment cannot flatten every
+    // other bar to nothing. The shares are compared in the same terms.
+    const biggest = Math.max(up, down, 0);
+    if (!biggest) return { baseline: 4, scale: 0 };
+    const upShare = Math.sqrt(Math.max(up, 0) / biggest);
+    const downShare = Math.sqrt(Math.max(down, 0) / biggest);
+
+    // Headroom at the top for axis labels, a hairline of margin at the foot.
+    const TOP = 88;
+    const FOOT = 4;
+    const baseline = (TOP * downShare + FOOT * upShare) / (upShare + downShare);
+    const scale = upShare ? (TOP - baseline) / upShare : (baseline - FOOT) / downShare;
+    return { baseline, scale };
+  }
+
   /** Read a design token off :root so JS-drawn surfaces match the stylesheet. */
   function token(name, fallback) {
     const value = getComputedStyle(document.documentElement)
@@ -241,6 +280,7 @@
   });
 
   global.Theme = {
+    baselineFor,
     categoryColor,
     categoryRank,
     majorFor,

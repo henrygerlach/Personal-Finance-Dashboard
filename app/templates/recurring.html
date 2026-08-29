@@ -75,8 +75,6 @@
     <h1>What repeats</h1>
     <p class="subtitle">
       Same merchant, similar amount, regular interval, at least three times.
-      Nothing here is a category — whether a payment repeats is a property of
-      the history, so it is measured rather than assigned.
     </p>
   </div>
   <div class="hero-stat">
@@ -158,53 +156,32 @@
     </p>
     {% endif %}
 
-    <p class="field-note">
-      Only schedules that are still running are counted — a subscription
-      cancelled two years ago is history, not a commitment. Quarterly,
-      half-yearly and yearly charges are carried at their monthly equivalent,
-      so an annual insurance premium can be compared with a streaming
-      subscription. Transfers — savings plans, money moved between your own
-      accounts — are listed separately: they are neither income nor spending.
-    </p>
   </section>
 
-  {% if overview.upcoming %}
-  <section class="section-block" aria-labelledby="upcoming-title">
+  {# A schedule's defining property is the day it lands on, and the page said
+     that only in prose — "every month on the 3" — while the strip underneath
+     was a list of the next four. Neither showed the thing you actually want
+     to know, which is what a month looks like: three things on the 3rd, then
+     nothing until the 15th. A billing cycle is a cycle, so it is drawn as
+     one axis of days rather than as a calendar; which month it is does not
+     matter to a standing order. #}
+  {% if overview.count %}
+  <section class="section-block" aria-labelledby="month-title">
     <div class="panel-head">
-      <h2 class="panel-title" id="upcoming-title">
-        Next {{ overview.upcoming_days }} days
-      </h2>
-      {# What "now" means has to be said: statements arrive in batches, so the
-         window starts at the end of the imported history, not at today. #}
-      <span class="spectrum-caption">
-        {{ overview.upcoming|length }} expected from
-        <span data-day="{{ overview.reference_date }}">
-          {{ overview.reference_date }}</span>, the end of the history
-      </span>
+      <h2 class="panel-title" id="month-title">Through the month</h2>
+      <span class="spectrum-caption" id="month-caption"></span>
     </div>
-
-    {% if overview.days_behind >= 3 %}
-    <p class="field-note attention-note">
-      The history ends <strong>{{ overview.days_behind }} days</strong> ago, so
-      every date here counts from then and anything charged since is not
-      loaded yet. Upload a fresh statement to bring it up to date.
-    </p>
-    {% endif %}
-    <ol class="upcoming-strip">
-      {% for item in overview.upcoming %}
-      <li class="upcoming-stop is-clickable {{ 'is-late' if item.days_away < 0 }}"
-          data-schedule="{{ item.id }}" tabindex="0" role="button">
-        <span class="upcoming-when" data-day="{{ item.next_expected }}">
-          {{ item.next_expected }}
-        </span>
-        <span class="upcoming-name">
-          <span class="cat-swatch" data-category="{{ item.minor }}"></span>
-          {{ item.merchant }}
-        </span>
-        <span class="upcoming-amount" data-money="{{ item.amount }}"></span>
-      </li>
-      {% endfor %}
-    </ol>
+    <figure class="dial">
+      <div class="dial-plot" id="dial-plot">
+        <div class="dial-grid" id="dial-grid"></div>
+        <div class="dial-baseline"></div>
+        <div class="dial-marks" id="dial-marks"></div>
+      </div>
+      {# The day numbers sit outside the plot, not in a strip at its foot: a
+         mark drawn to the full height of the plot would otherwise land on top
+         of them. #}
+      <div class="dial-axis" id="dial-axis"></div>
+    </figure>
   </section>
   {% endif %}
 
@@ -410,5 +387,5 @@
     referenceDate: {{ overview.reference_date | tojson }}
   };
 </script>
-<script src="/static/recurring.js"></script>
+<script src="{{ static_url('recurring.js') }}"></script>
 {% endblock %}

@@ -320,3 +320,86 @@ def build_canonical_map(merchants) -> dict[str, str]:
         else:
             canonical[name] = name
     return canonical
+
+
+def merchant_of(transaction) -> str:
+    """
+    The merchant one stored transaction should be shown and grouped under.
+
+    The recovered PayPal counterparty wins where there is one, because for
+    those lines Comdirect's own booking text says nothing but "PayPal" — every
+    one of them would otherwise collapse into a single merchant. Everything
+    else is normalized out of the booking line.
+
+    Takes the transaction rather than its text so that every caller resolves a
+    merchant the same way; the drill-down list, the recurring page and the
+    trip suggester all have to agree on what counts as one merchant.
+
+    Args:
+        transaction: Anything carrying ``booking_text``, ``process`` and
+            optionally ``paypal_counterparty``.
+
+    Returns:
+        The merchant name, or the empty string where the line holds none.
+    """
+    recovered = getattr(transaction, "paypal_counterparty", None)
+    if recovered:
+        return recovered
+    return normalize_merchant(transaction.booking_text, transaction.process)
+
+
+# --- Where a card was used ---------------------------------------------------
+#
+# Two facts sit in a Comdirect card line that say where the cardholder was
+# standing, and between them they cover the cases the other misses.
+#
+# *The converted amount.* A payment in another currency carries the original
+# figure and the rate it was converted at: "Betrag: -199,00 THBKurs: 37,5190".
+# Unambiguous, but silent across the euro area — a week in Lisbon looks exactly
+# like a week at home.
+#
+# *The country code.* Every card line ends with a three-digit code, either at
+# the end of the text or run together with "Betrag:". It is the one signal that
+# survives the euro: the Slovenian charges in the sample data are in euros and
+# still carry their own code.
+#
+# Neither is read as a country *name* — the numbering is Comdirect's own and
+# nothing here needs to know that 690 is Vietnam. What matters is only that a
+# code differs from the one the card normally reports, and which code that is
+# has to be read from the data rather than assumed, because it is wherever the
+# cardholder lives.
+
+#: The currency of a converted card payment.
+_FOREIGN_AMOUNT = re.compile(r"Betrag:\s*-?[\d.,]+\s*([A-Z]{3})")
+
+#: The three-digit country code that closes a card line, whether it ends there
+#: or runs straight into the converted amount.
+_CARD_COUNTRY = re.compile(r"\s(\d{3})(?:Betrag:|\s*$)")
+
+
+def foreign_currency(booking_text: str | None) -> str | None:
+    """
+    The currency a card payment was converted from, or ``None``.
+
+    Returns:
+        An ISO currency code, or None where the line records no conversion —
+        which covers every domestic payment and every payment made in euros
+        anywhere in the euro area.
+    """
+    match = _FOREIGN_AMOUNT.search(booking_text or "")
+    if not match:
+        return None
+    currency = match.group(1)
+    return None if currency == "EUR" else currency
+
+
+def card_country(booking_text: str | None) -> str | None:
+    """
+    The country code Comdirect stamped on a card line, or ``None``.
+
+    The code is meaningful only against the one the card usually reports; see
+    :func:`app.trips.home_country`. A line that is not a card payment — a
+    transfer, a direct debit — carries no code and returns None.
+    """
+    match = _CARD_COUNTRY.search(booking_text or "")
+    return match.group(1) if match else None

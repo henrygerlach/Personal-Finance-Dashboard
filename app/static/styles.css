@@ -890,6 +890,8 @@ a {
 
 input[type="text"],
 input[type="search"],
+input[type="date"],
+input[type="number"],
 select {
   font-family: var(--font-body);
   font-size: 0.95rem;
@@ -908,8 +910,16 @@ select {
 
 input[type="text"]:hover,
 input[type="search"]:hover,
+input[type="date"]:hover,
+input[type="number"]:hover,
 select:hover {
   border-color: var(--rule-strong);
+}
+
+/* The native pickers render black-on-black in a dark scheme otherwise. */
+input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.7);
+  cursor: pointer;
 }
 
 input::placeholder {
@@ -2309,4 +2319,680 @@ input:disabled {
    `.transaction-facts dd`, which would otherwise out-rank a bare class. */
 .paypal-facts .paypal-message {
   color: var(--paper);
+}
+
+/* ==========================================================================
+   Trips
+
+   A trip is a container, not a date filter, and the page has to keep saying
+   so: the mix bar, the three phase figures and the review queue are all there
+   to show that the total came from decisions rather than from a range.
+   ========================================================================== */
+
+/* A field-note is normally a mono caption. Several notes on these pages are
+   real sentences explaining why a window is drawn where it is, and those read
+   as prose. */
+.field-note.is-prose {
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--paper-dim);
+  max-width: 72ch;
+}
+
+.trip-form {
+  margin-top: var(--gap-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-md);
+}
+
+.trip-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--gap-md);
+}
+
+.trip-form-grid .form-group.is-wide {
+  grid-column: 1 / -1;
+}
+
+.trip-new {
+  border-top: 0;
+  padding-top: 0;
+}
+
+/* --- The list ------------------------------------------------------------- */
+
+.trip-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--gap-md);
+}
+
+.trip-card {
+  background: var(--ink-1);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  padding: var(--gap-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-xs);
+  min-width: 0;
+  text-decoration: none;
+  color: inherit;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.trip-card:hover,
+.trip-card:focus-visible {
+  border-color: var(--rule-strong);
+  background: var(--ink-2);
+  outline: none;
+}
+
+.trip-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--gap-xs);
+  flex-wrap: wrap;
+}
+
+.trip-name {
+  font-size: 1rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.trip-where {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--paper-faint);
+}
+
+.trip-dates {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  color: var(--paper-faint);
+}
+
+.trip-amount {
+  font-family: var(--font-mono);
+  font-size: 1.35rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  margin-top: var(--gap-xs);
+}
+
+.trip-meta {
+  font-size: 0.8rem;
+  color: var(--paper-dim);
+}
+
+.trip-meta.is-quiet {
+  color: var(--paper-faint);
+  font-size: 0.75rem;
+}
+
+/* The shape of a trip in one line: two holidays of the same size are not the
+   same holiday if one is all flights and the other all restaurants. */
+.trip-mix {
+  display: flex;
+  height: 6px;
+  margin-top: var(--gap-xs);
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--ink-2);
+}
+
+.trip-mix span {
+  min-width: 2px;
+}
+
+.trip-budget {
+  margin-top: var(--gap-xs);
+}
+
+.trip-back {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px solid var(--rule-strong);
+}
+
+.trip-back:hover {
+  color: var(--paper);
+}
+
+/* --- The review queue ----------------------------------------------------- */
+
+.trip-phase {
+  margin-top: var(--gap-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-xs);
+}
+
+.trip-phase-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--gap-sm);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.trip-queue-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: baseline;
+  gap: var(--gap-sm);
+  padding: 0.55rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.trip-queue-row.is-saving {
+  opacity: 0.5;
+}
+
+/* A decided row stays where it is — a queue is where a decision is most often
+   made too fast, and a row that vanishes takes its own undo with it. */
+.trip-queue-row.is-included {
+  border-left: 2px solid var(--pos);
+  padding-left: var(--gap-sm);
+}
+
+.trip-queue-row.is-dismissed {
+  opacity: 0.55;
+}
+
+.trip-queue-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-xs);
+}
+
+.ghost-button.is-small {
+  font-size: 0.78rem;
+  padding: 4px 10px;
+}
+
+.ghost-button.is-danger {
+  border-color: var(--neg);
+  color: var(--neg);
+}
+
+.ghost-button.is-danger:hover,
+.ghost-button.is-armed {
+  background: var(--neg);
+  color: var(--ink-0);
+  border-color: var(--neg);
+}
+
+.trip-reason,
+.trip-claim,
+.trip-note {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--paper-faint);
+  margin-top: 2px;
+}
+
+/* A transaction another trip already counts is the one case where adding it
+   here takes something away somewhere else. */
+.trip-claim {
+  color: var(--neg);
+}
+
+.trip-note {
+  grid-column: 2 / -1;
+  color: var(--paper-dim);
+}
+
+/* The unit belongs to the box, so the two move as one control. */
+.trip-split {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  /* The unit reads as part of the box, not as the start of the next control. */
+  margin-right: var(--gap-xs);
+}
+
+.trip-share-unit {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--paper-faint);
+}
+
+.trip-share {
+  width: 68px;
+  padding: 4px 8px;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+.trip-weak {
+  margin-top: var(--gap-sm);
+}
+
+.trip-weak summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: var(--paper-dim);
+  list-style: none;
+  display: flex;
+  align-items: baseline;
+  gap: var(--gap-xs);
+  flex-wrap: wrap;
+}
+
+.trip-weak summary::-webkit-details-marker {
+  display: none;
+}
+
+.trip-weak summary::before {
+  content: "▸";
+  color: var(--paper-faint);
+  font-size: 0.7rem;
+}
+
+.trip-weak[open] summary::before {
+  content: "▾";
+}
+
+.trip-assigned .trip-queue-row:last-child {
+  border-bottom: none;
+}
+
+@media (max-width: 640px) {
+  /* The actions drop under the row rather than squeezing the merchant out. */
+  .trip-queue-row {
+    grid-template-columns: auto 1fr auto;
+  }
+  .trip-queue-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+  }
+}
+
+/* --- Detected trips awaiting confirmation --------------------------------- */
+
+/* A proposal is not a trip, and must not look like one. The cards on this
+   page are solid and clickable; these are outlined and hold an empty form,
+   because the only thing that turns one into a trip is somebody naming it. */
+.found-trip {
+  border: 1px dashed var(--rule-strong);
+  border-radius: var(--radius-lg);
+  padding: var(--gap-md);
+  margin-top: var(--gap-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-xs);
+}
+
+.found-trip.is-thin {
+  opacity: 0.82;
+}
+
+.found-trip.is-saving {
+  opacity: 0.5;
+}
+
+.found-trip.is-error {
+  border-color: var(--neg);
+}
+
+.found-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--gap-md);
+  flex-wrap: wrap;
+}
+
+.found-when {
+  font-size: 1rem;
+  font-weight: 600;
+  display: flex;
+  align-items: baseline;
+  gap: var(--gap-xs);
+}
+
+.found-year {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--paper-faint);
+}
+
+.found-facts,
+.found-evidence,
+.found-merchants {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--paper-faint);
+}
+
+.found-merchants {
+  text-transform: none;
+  letter-spacing: 0.02em;
+  color: var(--paper-dim);
+}
+
+/* The one part of the evidence worth hesitating over. */
+.found-flag {
+  color: var(--neg);
+}
+
+.found-form {
+  margin-top: var(--gap-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-sm);
+}
+
+.found-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--gap-sm);
+}
+
+.found-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: var(--gap-sm);
+}
+
+.field-note.is-quiet {
+  color: var(--paper-faint);
+}
+
+/* The whole-trip split. Built like the recurring page's unit toggle, because
+   it is the same kind of control: it changes the unit every figure below is
+   read in, rather than changing what is counted. */
+.split-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gap-xs);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  padding: 4px 8px;
+  background: var(--ink-1);
+}
+
+.split-toggle .label {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--paper-faint);
+  margin-right: 2px;
+}
+
+.split-toggle button {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  padding: 3px 9px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--paper-dim);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.split-toggle button:hover {
+  background: var(--ink-3);
+  color: var(--paper);
+}
+
+.split-toggle button.is-active {
+  background: var(--paper);
+  color: var(--ink-0);
+}
+
+.split-toggle .split-other {
+  width: 52px;
+  padding: 3px 6px;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+/* --- When it was paid ------------------------------------------------------
+   The trip page's one drawn figure. Everything else on these pages is a card
+   or a row; this is deliberately not, because it is the only thing that shows
+   rather than states why a trip cannot be read off its own dates. */
+
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-sm);
+}
+
+.timeline-plot {
+  position: relative;
+  height: 132px;
+  border-radius: var(--radius-md);
+  background: var(--ink-1);
+  overflow: hidden;
+}
+
+/* The days actually away. Lit rather than outlined, so the eye reads it as
+   the subject and the months either side as context. */
+.timeline-window {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 2px;
+  background: var(--ink-3);
+  border-left: 1px solid var(--rule-strong);
+  border-right: 1px solid var(--rule-strong);
+}
+
+/* The line sits where the data needs it: near the floor when nothing came
+   back, so the spending uses the full height, and near the middle when
+   something did, so both directions are drawn to one scale and neither is
+   clipped. Set from JS as --baseline, measured up from the bottom. */
+.timeline-baseline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: var(--baseline, 34%);
+  border-top: 1px solid var(--rule-strong);
+}
+
+.timeline-marks {
+  position: absolute;
+  inset: 0;
+}
+
+.timeline-mark {
+  position: absolute;
+  bottom: var(--baseline, 34%);
+  width: 3px;
+  margin-left: -1.5px;
+  border-radius: 1px;
+  opacity: 0.9;
+  transition: opacity 0.15s ease, width 0.15s ease;
+}
+
+.timeline-mark:hover {
+  opacity: 1;
+  width: 5px;
+  margin-left: -2.5px;
+}
+
+.timeline-mark.is-back {
+  bottom: auto;
+  top: calc(100% - var(--baseline, 34%));
+}
+
+.timeline-legend {
+  position: relative;
+  height: 2.4rem;
+}
+
+/* Each total sits over the stretch of time it happened in. */
+.timeline-region {
+  position: absolute;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  white-space: nowrap;
+}
+
+.timeline-region-value {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--paper);
+}
+
+.timeline-region-label {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--paper-faint);
+}
+
+@media (max-width: 640px) {
+  .timeline-plot {
+    height: 96px;
+  }
+  .timeline-region-value {
+    font-size: 0.72rem;
+  }
+  .timeline-region-label {
+    display: none;
+  }
+}
+
+/* Month boundaries, so the empty stretch between a booking and the holiday
+   reads as the time it was rather than as an empty box. */
+.timeline-grid {
+  position: absolute;
+  inset: 0;
+}
+
+.timeline-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid var(--rule);
+  padding-left: 5px;
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--paper-faint);
+  line-height: 1.9;
+  pointer-events: none;
+}
+
+/* --- Through the month -----------------------------------------------------
+   The recurring page's figure, in the same visual language as the trip
+   timeline: height by amount, colour by category, money coming in below the
+   line. One axis of days rather than a calendar grid, because a standing
+   order repeats on a day and does not care which month it is. */
+
+.dial-plot {
+  position: relative;
+  height: 98px;
+  border-radius: var(--radius-md);
+  background: var(--ink-1);
+  padding: 0 var(--gap-md);
+  overflow: hidden;
+}
+
+.dial-grid,
+.dial-marks {
+  position: absolute;
+  inset: 0 var(--gap-md);
+}
+
+.dial-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid var(--rule);
+}
+
+/* The numbered days carry a slightly stronger line, so the axis reads in
+   fives without every day shouting. */
+.dial-tick.is-labelled {
+  border-left-color: var(--rule-strong);
+}
+
+.dial-axis {
+  position: relative;
+  height: 1.1rem;
+  margin: 4px var(--gap-md) 0;
+}
+
+.dial-day {
+  position: absolute;
+  transform: translateX(-50%);
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.08em;
+  color: var(--paper-faint);
+}
+
+.dial-baseline {
+  position: absolute;
+  left: var(--gap-md);
+  right: var(--gap-md);
+  bottom: var(--baseline, 38%);
+  border-top: 1px solid var(--rule-strong);
+}
+
+.dial-mark {
+  position: absolute;
+  bottom: var(--baseline, 38%);
+  /* Wide enough to read as a bar rather than a hairline: a month with five
+     commitments has to look deliberate, not empty. */
+  width: 7px;
+  margin-left: -3.5px;
+  padding: 0;
+  border: 0;
+  border-radius: 1px;
+  opacity: 0.9;
+  cursor: pointer;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.dial-mark:hover,
+.dial-mark:focus-visible {
+  opacity: 1;
+  transform: scaleX(1.6);
+  outline: none;
+}
+
+.dial-mark.is-in {
+  bottom: auto;
+  top: calc(100% - var(--baseline, 38%));
+}
+
+/* The only signal colour on the figure, for the only thing worth acting on. */
+.dial-mark.is-due {
+  box-shadow: 0 0 0 1px var(--neg);
+}
+
+@media (max-width: 640px) {
+  .dial-plot {
+    height: 92px;
+  }
+  .dial-day {
+    font-size: 0.55rem;
+  }
 }

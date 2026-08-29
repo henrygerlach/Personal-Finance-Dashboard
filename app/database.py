@@ -12,10 +12,13 @@ from app.config import get_logger, settings
 from app.models import (
     CategoryRule,
     ComdirectBalanceSnapshot,
+    DismissedTripProposal,
     MerchantCategory,
     PayPalRecord,
     RecurringOverride,
     Transaction,
+    Trip,
+    TripAssignment,
 )
 
 logger = get_logger(__name__)
@@ -44,6 +47,9 @@ class DatabaseManager:
                 ComdirectBalanceSnapshot,
                 PayPalRecord,
                 RecurringOverride,
+                Trip,
+                TripAssignment,
+                DismissedTripProposal,
             ],
         )
         logger.info("Database connection established and Beanie initialized")

@@ -104,6 +104,118 @@
   });
   applyUnit("monthly");
 
+  // --- Through the month -----------------------------------------------------
+  //
+  // One axis of days, because a billing cycle is a cycle: which month it is
+  // does not matter to a standing order, only which day it lands on. The
+  // marks use the same language as the trip timeline — height by amount,
+  // colour by category, money in hanging below the line — so the two figures
+  // read the same way.
+
+  const DIAL_DAYS = 31;
+
+  function drawMonth() {
+    const plot = document.getElementById("dial-plot");
+    if (!plot) return;
+
+    // Only what is actually still running: a cancelled subscription is
+    // history, and a dismissed one is not a schedule at all.
+    const live = [...items.values()].filter(
+      (item) => item.status !== "ended" && item.override !== "dismissed"
+    );
+    if (!live.length) return;
+
+    const grid = document.getElementById("dial-grid");
+    const axis = document.getElementById("dial-axis");
+    grid.replaceChildren();
+    axis.replaceChildren();
+    // Every day gets a hairline; only some get a number, or the axis becomes
+    // a picket fence.
+    for (let d = 1; d <= DIAL_DAYS; d += 1) {
+      const position = `${((d - 1) / (DIAL_DAYS - 1)) * 100}%`;
+      const labelled = d === 1 || d % 5 === 0 || d === DIAL_DAYS;
+      const tick = document.createElement("span");
+      tick.className = `dial-tick${labelled ? " is-labelled" : ""}`;
+      tick.style.left = position;
+      grid.appendChild(tick);
+      if (!labelled) continue;
+      const label = document.createElement("span");
+      label.className = "dial-day";
+      label.style.left = position;
+      label.textContent = d;
+      axis.appendChild(label);
+    }
+
+    // The zero line goes where the mix of incoming and outgoing schedules
+    // needs it; see Theme.baselineFor.
+    const size = (item) => Math.abs(item.monthly_equivalent);
+    const out = live.filter((item) => item.direction !== "in").map(size);
+    const income = live.filter((item) => item.direction === "in").map(size);
+    const biggest = Math.max(...out, ...income, 0);
+    const { baseline, scale } = window.Theme.baselineFor(
+      Math.max(...out, 0),
+      Math.max(...income, 0)
+    );
+    plot.style.setProperty("--baseline", `${baseline}%`);
+    const marks = document.getElementById("dial-marks");
+    marks.replaceChildren();
+
+    // Several commitments can share a day — the 1st usually carries most of
+    // them — so a day's marks are fanned rather than stacked on one another.
+    const byDay = new Map();
+    live.forEach((item) => {
+      const day = Math.min(DIAL_DAYS, Math.max(1, item.typical_day));
+      if (!byDay.has(day)) byDay.set(day, []);
+      byDay.get(day).push(item);
+    });
+
+    byDay.forEach((group, day) => {
+      const centre = ((day - 1) / (DIAL_DAYS - 1)) * 100;
+      group
+        .slice()
+        .sort((a, b) => Math.abs(b.monthly_equivalent) - Math.abs(a.monthly_equivalent))
+        .forEach((item, index) => {
+          const offset = (index - (group.length - 1) / 2) * 1.3;
+          const mark = document.createElement("button");
+          mark.type = "button";
+          mark.className = `dial-mark${item.direction === "in" ? " is-in" : ""}${
+            item.status === "due" ? " is-due" : ""
+          }`;
+          mark.dataset.schedule = item.id;
+          mark.style.left = `${centre + offset}%`;
+          mark.style.height = `${Math.max(
+            4,
+            Math.sqrt(size(item) / biggest) * scale
+          )}%`;
+          mark.style.background = categoryColor(item.minor);
+          mark.setAttribute(
+            "aria-label",
+            `${item.merchant}, ${formatCurrency(item.amount)} on day ${day}`
+          );
+          mark.title = `Day ${day} · ${item.merchant} · ${formatCurrency(
+            item.amount
+          )}`;
+          marks.appendChild(mark);
+        });
+    });
+
+    const caption = document.getElementById("month-caption");
+    if (caption) {
+      const days = byDay.size;
+      caption.textContent = `${live.length} commitments on ${days} ${
+        days === 1 ? "day" : "days"
+      } of the month`;
+    }
+  }
+
+  // As on the trip page: a figure that cannot draw must not take the popup
+  // and the override buttons down with it.
+  try {
+    drawMonth();
+  } catch (error) {
+    console.error("[recurring] the month dial could not be drawn", error);
+  }
+
   // --- The schedule popup ----------------------------------------------------
 
   const modal = document.getElementById("schedule-modal");
