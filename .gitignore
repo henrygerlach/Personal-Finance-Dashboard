@@ -27,3 +27,8 @@ logs/
 
 # data
 paypal_data/
+
+# Natural Earth downloads, cached by scripts/build_world_data.py. Sixty
+# megabytes of source for the eight hundred kilobytes it commits; delete it
+# freely, the script fetches it again.
+.natural-earth-cache/
