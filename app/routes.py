@@ -521,11 +521,23 @@ async def split_trip(
     return {"status": "success", **result}
 
 
-@router.post("/api/trips/{trip_id}/accept-suggested")
-async def accept_trip_suggestions(trip_id: str) -> dict:
-    """Assign everything the suggester ticked, leaving the real questions."""
+@router.post("/api/trips/{trip_id}/assign-selected")
+async def assign_selected_to_trip(
+    trip_id: str,
+    transaction_id: Annotated[list[str], Form()],
+) -> dict:
+    """
+    Assign the transactions the user has selected in the queue.
+
+    Takes the ids explicitly rather than re-deriving the detector's own
+    suggestions, so that what the page shows selected and what is written are
+    the same set.
+
+    Form fields:
+        transaction_id: Repeated, one per selected transaction.
+    """
     try:
-        written = await TripService.accept_suggested(trip_id)
+        written = await TripService.assign_many(trip_id, transaction_id)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error))
     return {"status": "success", "assigned": written}

@@ -372,6 +372,18 @@ def merchant_of(transaction) -> str:
 #: The currency of a converted card payment.
 _FOREIGN_AMOUNT = re.compile(r"Betrag:\s*-?[\d.,]+\s*([A-Z]{3})")
 
+#: The older card format writes the conversion differently: the merchant, the
+#: town, a two-letter country, the original amount and then a bare "KURS"
+#: followed by the rate — "CAPADLO PRAHA 1 CZ 51,00 KURS 0,041814424". A
+#: domestic line in the same format simply has no country and no KURS
+#: ("ROSSMANN 2200 HAMBURG KARTE 0132"), which is what makes the word a
+#: reliable marker on its own.
+_EXCHANGE_RATE = re.compile(r"\sKURS\s+[\d.,]+")
+
+#: The country in that same line, taken only when the rate confirms the card
+#: was used abroad. Two letters are far too common a shape to trust unguarded.
+_EXCHANGE_COUNTRY = re.compile(r"\s([A-Z]{2})\s+[\d.,]+\s+KURS\s")
+
 #: The three-digit country code that closes a card line, whether it ends there
 #: or runs straight into the converted amount.
 _CARD_COUNTRY = re.compile(r"\s(\d{3})(?:Betrag:|\s*$)")
@@ -391,6 +403,28 @@ def foreign_currency(booking_text: str | None) -> str | None:
         return None
     currency = match.group(1)
     return None if currency == "EUR" else currency
+
+
+def converted_abroad(booking_text: str | None) -> str | None:
+    """
+    Whether an older-format card line records a currency conversion.
+
+    Comdirect has written card payments three different ways across this
+    history, and each hides the fact of being abroad somewhere else. This
+    reads the oldest of them, which is the only marker for 2022 and most of
+    2023 — the period where no line carries a trailing country code and none
+    carries a "Betrag:" conversion either.
+
+    Returns:
+        The two-letter country where the line names one, ``""`` when the rate
+        is there but the country is not, and ``None`` when the card was not
+        used abroad. The empty string still means abroad, so callers must test
+        for None rather than for falsiness.
+    """
+    if not _EXCHANGE_RATE.search(booking_text or ""):
+        return None
+    match = _EXCHANGE_COUNTRY.search(booking_text or "")
+    return match.group(1) if match else ""
 
 
 def card_country(booking_text: str | None) -> str | None:

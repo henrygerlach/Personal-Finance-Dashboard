@@ -2996,3 +2996,359 @@ input:disabled {
     font-size: 0.55rem;
   }
 }
+
+/* ==========================================================================
+   The trips map
+
+   Land is drawn one shade above the page and the countries that were visited
+   one shade above that, so the shape of where somebody has been is legible
+   before a single dot is read. Everything saturated on the map is a trip.
+   ========================================================================== */
+
+.atlas {
+  position: relative;
+  background: var(--ink-1);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  padding: var(--gap-sm);
+  /* Held open before the outlines arrive, so the cards below do not jump
+     down the page when they do. */
+  aspect-ratio: 2.5 / 1;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+
+.atlas.is-drawn {
+  opacity: 1;
+}
+
+.atlas-map {
+  width: 100%;
+  height: 100%;
+  display: block;
+  /* The outlines are drawn for the whole world and the viewBox is a window
+     onto the part of it the trips are in, so everything outside the frame
+     has to be clipped away rather than left to spill over the panel. */
+  overflow: hidden;
+}
+
+.atlas-land {
+  fill: var(--ink-3);
+  stroke: var(--ink-1);
+  stroke-width: 0.6;
+}
+
+.atlas-land.is-visited {
+  fill: #32425a;
+}
+
+.atlas-dot {
+  fill: var(--focus);
+  stroke: var(--ink-0);
+  stroke-width: 1.2;
+  transition: fill 0.15s ease;
+}
+
+/* The dot itself is small enough that hitting it with a pointer would be
+   fiddly, so an invisible disc around it takes the events. */
+.atlas-halo {
+  fill: transparent;
+}
+
+.atlas-mark {
+  cursor: pointer;
+}
+
+.atlas-mark:hover .atlas-dot,
+.atlas-mark:focus-visible .atlas-dot {
+  fill: var(--paper);
+}
+
+.atlas-mark:focus-visible {
+  outline: none;
+}
+
+.atlas-mark:focus-visible .atlas-halo {
+  fill: rgba(127, 176, 255, 0.18);
+}
+
+.atlas-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  fill: var(--paper-dim);
+  pointer-events: none;
+}
+
+/* --- The card off a dot --------------------------------------------------- */
+
+.atlas-pop {
+  position: absolute;
+  z-index: 5;
+  min-width: 210px;
+  max-width: 300px;
+  transform: translate(14px, -50%);
+  background: var(--ink-2);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow);
+  padding: var(--gap-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Flipped rather than allowed off the edge: a dot in Japan is at the right
+   of the frame, and a card to its right would be outside the panel. */
+.atlas-pop.is-left {
+  transform: translate(-100%, -50%) translateX(-14px);
+}
+
+.atlas-pop.is-below {
+  transform: translate(14px, 14px);
+}
+
+.atlas-pop.is-left.is-below {
+  transform: translate(-100%, 14px) translateX(-14px);
+}
+
+.atlas-pop-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--gap-xs);
+  flex-wrap: wrap;
+  margin-bottom: var(--gap-xs);
+}
+
+.atlas-pop-place {
+  font-weight: 600;
+}
+
+.atlas-pop-where {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--paper-faint);
+}
+
+.atlas-trip {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0 var(--gap-sm);
+  padding: 4px 6px;
+  margin: 0 -6px;
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+  color: inherit;
+}
+
+.atlas-trip:hover,
+.atlas-trip:focus-visible {
+  background: var(--ink-3);
+  outline: none;
+}
+
+/* Placed rather than flowed: the amount is a tall cell on the right of two
+   short ones, and auto-placement puts it first instead. */
+.atlas-trip-name {
+  grid-area: 1 / 1;
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.atlas-trip-when {
+  grid-area: 2 / 1;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.04em;
+  color: var(--paper-faint);
+}
+
+.atlas-trip-sum {
+  grid-area: 1 / 2 / span 2 / 2;
+  align-self: center;
+  white-space: nowrap;
+  font-size: 0.85rem;
+  color: var(--paper-dim);
+}
+
+/* ==========================================================================
+   When the trips were
+
+   A row of twelve months per year, in the same visual language as the trip
+   page's timeline: absolutely placed marks over month divisions, the labels
+   mono and quiet, the colour carried entirely by the data.
+   ========================================================================== */
+
+.seasons {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  background: var(--ink-1);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  padding: var(--gap-md);
+}
+
+/* The year label and the track, on one grid so every row's months line up
+   under the month names in the head. */
+.seasons-head,
+.seasons-year {
+  display: grid;
+  grid-template-columns: 46px 1fr;
+  align-items: center;
+  gap: var(--gap-sm);
+}
+
+.seasons-head {
+  margin-bottom: var(--gap-xs);
+}
+
+.seasons-axis,
+.seasons-grid {
+  position: relative;
+  height: 100%;
+}
+
+.seasons-axis {
+  height: 1rem;
+}
+
+.seasons-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid var(--rule);
+  padding-left: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--paper-faint);
+  pointer-events: none;
+}
+
+/* January's division is the edge of the row, and a line drawn on the edge
+   reads as a border around the figure rather than as the start of a year. */
+.seasons-tick:first-child {
+  border-left-color: transparent;
+}
+
+.seasons-label {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  color: var(--paper-faint);
+  text-align: right;
+}
+
+.seasons-track {
+  position: relative;
+  height: 22px;
+}
+
+.seasons-block {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  /* A long weekend is a fifth of a percent of a year, which rounds to
+     nothing. The minimum is what makes a short trip a mark rather than a
+     hairline; it costs a couple of days of accuracy at this scale. */
+  min-width: 5px;
+  border-radius: 2px;
+  opacity: 0.85;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.seasons-block:hover,
+.seasons-block:focus-visible {
+  opacity: 1;
+  transform: scaleY(1.25);
+  outline: none;
+}
+
+/* Clipped rather than wrapped, because the row is a year and has to stay one
+   line. The full name comes back on hover, over the top of whatever follows
+   it — reading a name matters more for the moment it takes than the trip
+   beside it staying uncovered. */
+.seasons-name {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  margin-left: 6px;
+  font-size: 0.75rem;
+  line-height: 1.2;
+  color: var(--paper-dim);
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.seasons-name:hover,
+.seasons-block:hover + .seasons-name,
+.seasons-block:focus-visible + .seasons-name {
+  z-index: 2;
+  max-width: none !important;
+  overflow: visible;
+  /* Only once it is showing, so that a name with no room at all — a trip
+     ending on the 31st of December — takes up nothing at all. */
+  padding-right: 4px;
+  color: var(--paper);
+  background: var(--ink-1);
+  outline: none;
+}
+
+@media (max-width: 720px) {
+  /* Three letters a month needs about 340px of track; below that the row is
+     divided by the ticks alone and the months are read off the head's
+     first, middle and last labels. */
+  .seasons-tick {
+    font-size: 0;
+  }
+  .seasons-axis .seasons-tick:nth-child(6n + 1) {
+    font-size: 0.6rem;
+  }
+}
+
+/* The year on a trip card. A shade brighter than the day and month beside it,
+   because in a list spanning several years it is the part being looked for. */
+.trip-year {
+  color: var(--paper-dim);
+}
+
+/* The queue's selection, made visible. The decision used to live in an
+   invisible flag the button described as "ticked". */
+.trip-pick {
+  display: flex;
+  align-items: center;
+  padding-right: 2px;
+}
+
+.trip-pick input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--paper);
+  cursor: pointer;
+}
+
+.trip-pick input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+/* The row grew a column when the checkbox arrived. */
+.trip-queue-row {
+  grid-template-columns: auto auto 1fr auto auto;
+}
+
+.trip-assigned .trip-queue-row {
+  grid-template-columns: auto 1fr auto auto;
+}
+
+@media (max-width: 640px) {
+  .trip-queue-row {
+    grid-template-columns: auto auto 1fr auto;
+  }
+}

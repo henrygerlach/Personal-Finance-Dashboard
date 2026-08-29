@@ -18,6 +18,7 @@ from app.trips import (
     PHASE_BOOKED,
     PHASE_DURING,
     PHASE_SETTLED,
+    SAME_DAY_CHARGES,
     SETTLEMENT_LAG_DAYS,
     SETTLEMENT_TAIL_DAYS,
     STRENGTH_LIKELY,
@@ -28,6 +29,7 @@ from app.trips import (
     find_candidates,
     find_trip_candidates,
     home_country,
+    is_experience_platform,
     overlaps,
     phase_for,
     summarize,
@@ -568,15 +570,31 @@ def test_scattered_foreign_charges_are_not_a_trip():
     assert find_trip_candidates(history) == []
 
 
-def test_a_single_day_of_foreign_charges_is_a_shopping_session():
-    """Three charges to the same foreign shop in one afternoon is not a trip,
-    however many of them there are."""
+def test_a_lone_pair_on_one_day_is_a_shopping_session():
+    """
+    Two foreign charges on a single afternoon is an online order and its
+    refund, and there is nothing else to say it was anywhere.
+    """
     history = a_week_at_home(datetime(2026, 1, 1)) + [
         card("a", datetime(2026, 3, 2)),
         card("b", datetime(2026, 3, 2)),
-        card("c", datetime(2026, 3, 2)),
     ]
     assert find_trip_candidates(history) == []
+
+
+def test_a_dense_single_day_is_a_weekend_away():
+    """
+    Written from the real data, where a Saturday in Denmark left seven
+    currency conversions and nothing on any other day. Requiring two days
+    refused every weekend trip in the history — seven conversions in an
+    afternoon is somebody standing in Denmark, not somebody shopping.
+    """
+    history = a_week_at_home(datetime(2026, 1, 1)) + [
+        card(f"d{i}", datetime(2026, 3, 2)) for i in range(SAME_DAY_CHARGES)
+    ]
+    found = find_trip_candidates(history)
+    assert len(found) == 1
+    assert found[0].days == 1
 
 
 def test_a_quiet_stretch_inside_a_trip_does_not_split_it():
@@ -831,3 +849,118 @@ def test_person_to_person_splits_with_the_trip_like_everything_else():
     """A shared trip's transfers are shared too."""
     sent = person("p", -600.0)
     assert summarize([(sent, 1.0)], START, END, split_ways=2)["person_out"] == 300.0
+
+
+def test_the_oldest_card_format_is_read_too():
+    """
+    Comdirect has written card payments three ways across this history, and
+    each hides being abroad somewhere else. The oldest writes the country and
+    a bare "KURS" and the rate, and it is the only marker there is for 2022
+    and most of 2023 — without it the detector cannot see that far back at
+    all. A domestic line in the same format has neither.
+    """
+    abroad = [
+        tx(
+            f"p{i}",
+            date=datetime(2026, 3, 2 + i * 2),
+            booking_text=" CAPADLO PRAHA 1 CZ 51,00 KURS 0,041814424 KARTE 0132 ",
+        )
+        for i in range(3)
+    ]
+    at_home = tx(
+        "h",
+        date=datetime(2026, 3, 3),
+        booking_text=" ROSSMANN 2200 HAMBURG KARTE 0132 02122022 ",
+    )
+    found = find_trip_candidates([at_home] + abroad)
+    assert len(found) == 1
+    assert found[0].countries == ("CZ",)
+
+
+def test_an_experience_booked_before_departure_is_proposed():
+    """
+    A walking tour is filed under Events & Culture rather than Travel, so the
+    category rule could not see it and a tour booked a fortnight before
+    departure was missing from the very window it belongs in.
+    """
+    tour = tx(
+        "g",
+        amount=-268.37,
+        date=START - timedelta(days=5),
+        major="Leisure & Entertainment",
+        minor="Events & Culture",
+        booking_text=" Auftraggeber: PayPal Europe S.a.r.l. et Cie S.C.A ",
+        paypal_counterparty="GETYOURG UIDE DEUTSCHLAND GMBH",
+    )
+    candidate = by_id(find_candidates([tour], START, END))["g"]
+    assert candidate.phase == PHASE_BOOKED
+    assert candidate.suggested
+    assert "experience" in candidate.reason
+
+
+def test_a_wrapped_platform_name_is_still_recognised():
+    """
+    Comdirect wraps these names mid-word and inconsistently — the same
+    merchant arrives as "GETYOURG UIDE DEUTSCHLAND GMBH" on one line and
+    "GETYOURGUIDE DEUTSC HLAND GMBH" on another — which is exactly what the
+    space-free merchant key exists to survive.
+    """
+    for spelling in (
+        "GETYOURG UIDE DEUTSCHLAND GMBH",
+        "GETYOURGUIDE DEUTSC HLAND GMBH",
+    ):
+        assert is_experience_platform(
+            tx("x", booking_text=" PayPal ", paypal_counterparty=spelling)
+        )
+
+
+def test_a_small_experience_still_counts_where_a_small_booking_would_not():
+    """
+    The amount threshold exists to keep a previous holiday's bus fares out of
+    the lead-in. A named tour platform needs no such guard — nobody books a
+    walking tour by accident — and the cheap ones are exactly what was being
+    missed.
+    """
+    cheap_tour = tx(
+        "g",
+        amount=-13.35,
+        date=START - timedelta(days=20),
+        major="Leisure & Entertainment",
+        minor="Events & Culture",
+        booking_text=" PayPal ",
+        paypal_counterparty="VIATOR",
+    )
+    cheap_flight = flight("f", date=START - timedelta(days=20), amount=-13.35)
+    found = by_id(find_candidates([cheap_tour, cheap_flight], START, END))
+    assert found["g"].suggested
+    assert not found["f"].suggested
+
+
+def test_an_old_experience_belongs_to_an_earlier_trip():
+    """The horizon still applies: a tour booked last autumn was last autumn's."""
+    old_tour = tx(
+        "g",
+        amount=-90.0,
+        date=START - timedelta(days=BOOKING_TICK_DAYS + 30),
+        major="Leisure & Entertainment",
+        minor="Events & Culture",
+        booking_text=" PayPal ",
+        paypal_counterparty="GETYOURGUIDE",
+    )
+    assert not by_id(find_candidates([old_tour], START, END))["g"].suggested
+
+
+def test_ordinary_events_at_home_stay_out_of_the_lead_in():
+    """
+    The whole category is not admitted, only the named platforms — otherwise a
+    year of cinema tickets would bury the lead-in.
+    """
+    cinema = tx(
+        "c",
+        amount=-34.0,
+        date=START - timedelta(days=30),
+        major="Leisure & Entertainment",
+        minor="Events & Culture",
+        booking_text=" KIEFT & KIEFT FILMTHEATER HAMBURG ",
+    )
+    assert find_candidates([cinema], START, END) == []

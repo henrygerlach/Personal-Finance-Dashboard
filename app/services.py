@@ -29,6 +29,7 @@ from app.models import (
     TripAssignment,
 )
 from app.normalization import merchant_key, merchant_of, normalize_merchant
+from app.places import atlas
 from app.recurrence import (
     AMOUNT_TOLERANCE,
     PERIOD_MONTHS,
@@ -36,7 +37,10 @@ from app.recurrence import (
     recurring_transaction_ids,
 )
 from app.trips import (
+    CONVERTED_MARKER,
+    PHASE_BOOKED,
     PHASES,
+    SETTLEMENT_TAIL_DAYS,
     assigned_phase,
     counts_as_spending,
     find_candidates,
@@ -1328,6 +1332,10 @@ class TripService:
             "count": len(items),
             "total_net": round(sum(i["summary"]["net"] for i in items), 2),
             "total_spend": round(sum(i["summary"]["spend"] for i in items), 2),
+            # Where the trips were, resolved from their destinations against
+            # an offline gazetteer. Built here rather than in a second route
+            # because it is the same list of trips seen from above.
+            "atlas": atlas(items),
         }
 
     @staticmethod
@@ -1361,7 +1369,8 @@ class TripService:
         # counted by two trips would be plausible in each and a lie across
         # both, so a claimed line is shown as claimed rather than offered.
         claims = await TripService._claims(exclude_trip_id=str(trip.id))
-        trip_names = {str(t.id): t.name for t in await Trip.find_all().to_list()}
+        all_trips = await Trip.find_all().to_list()
+        trip_names = {str(t.id): t.name for t in all_trips}
 
         assigned = []
         for transaction, share in rows:
@@ -1375,6 +1384,40 @@ class TripService:
         # summary walks the trip forwards, a reader scans it backwards.
         assigned.reverse()
 
+        # The windows of every *other* trip. A charge made while you were away
+        # somewhere else was that journey's, whatever its category — the
+        # lead-in otherwise offers last autumn's walking tours as bookings for
+        # this spring's holiday, which is precisely what it looks like from
+        # the dates alone.
+        others = [
+            (other.name, other.start_date, other.end_date)
+            for other in all_trips
+            if str(other.id) != str(trip.id)
+        ]
+
+        def better_claim(when: datetime, phase: str) -> str | None:
+            """
+            The other trip with a stronger claim on this charge, if any.
+
+            Three ways another journey can own a payment that the dates would
+            otherwise offer to this one. It can have happened *during* that
+            trip; it can have landed in that trip's settlement tail, the way a
+            card payment abroad reaches the bank days later; or — for
+            something bought before departure — that trip can simply leave
+            sooner. A tour bought five days before flying to Vietnam is
+            Vietnam's, even though it is also, technically, five months before
+            the next holiday.
+            """
+            tail = timedelta(days=SETTLEMENT_TAIL_DAYS)
+            for name, other_start, other_end in others:
+                if other_start <= when <= other_end:
+                    return name
+                if other_end < when <= other_end + tail:
+                    return name
+                if phase == PHASE_BOOKED and when < other_start < start:
+                    return name
+            return None
+
         candidates = []
         for candidate in find_candidates(transactions, start, end):
             existing = decided.get(candidate.transaction_id)
@@ -1383,16 +1426,21 @@ class TripService:
                 continue
             transaction = by_id[candidate.transaction_id]
             described = _describe_transaction(transaction)
+            elsewhere = better_claim(transaction.date, candidate.phase)
             described.update(
                 {
                     "phase": candidate.phase,
                     "strength": candidate.strength,
                     "reason": candidate.reason,
-                    # A decision already made outranks the suggestion: the
-                    # queue must not keep proposing what was refused once.
-                    "suggested": candidate.suggested and existing is None,
+                    # A decision already made outranks the suggestion, and so
+                    # does having happened during another journey. Both leave
+                    # the row in the queue — they only refuse to tick it.
+                    "suggested": (
+                        candidate.suggested and existing is None and not elsewhere
+                    ),
                     "dismissed": bool(existing),
                     "claimed_by": trip_names.get(claims.get(candidate.transaction_id)),
+                    "during_other": elsewhere,
                 }
             )
             candidates.append(described)
@@ -1645,27 +1693,26 @@ class TripService:
         }
 
     @staticmethod
-    async def accept_suggested(trip_id: str) -> int:
+    async def assign_many(trip_id: str, transaction_ids: list[str]) -> int:
         """
-        Assign everything the suggester ticked and nothing it did not.
+        Assign exactly the transactions the user selected.
 
-        The way a trip is normally filled in: the strong and likely candidates
-        go in with one action, and what is left in the queue is the handful of
-        genuine questions.
+        The ids come from the checkboxes rather than being re-derived here from
+        the detector's own suggestions. That distinction is the whole point:
+        the previous version assigned everything the *detector* had proposed
+        and called them "ticked", which meant working down the list and then
+        pressing the button swept in every row that had not been answered.
+        What the page shows selected and what this writes are now the same set.
 
         Returns:
             How many assignments were written.
         """
         trip = await TripService._get(trip_id)
-        detail = await TripService.detail(trip_id)
         written = 0
-        for phase_candidates in detail["candidates"].values():
-            for candidate in phase_candidates:
-                if not candidate["suggested"] or candidate["claimed_by"]:
-                    continue
-                await TripService._write(trip, candidate["id"], TRIP_INCLUDED)
-                written += 1
-        logger.info("Trip %s: accepted %s suggestions", detail["name"], written)
+        for transaction_id in transaction_ids:
+            await TripService._write(trip, transaction_id, TRIP_INCLUDED)
+            written += 1
+        logger.info("Trip %s: assigned %s selected", trip.name, written)
         return written
 
     @staticmethod
@@ -1775,7 +1822,12 @@ class TripService:
                 "charges": len(candidate.transaction_ids),
                 "spend": candidate.spend,
                 "countries": list(candidate.countries),
-                "currencies": list(candidate.currencies),
+                # The sentinel is not a currency and must not be printed as
+                # one; what it stands for is said in words instead.
+                "currencies": [
+                    code for code in candidate.currencies if code != CONVERTED_MARKER
+                ],
+                "converted": CONVERTED_MARKER in candidate.currencies,
                 "strength": candidate.strength,
                 # The merchants are what a reader actually recognises a trip
                 # by. A country code is evidence; "SUPERMARKET BLED" is a

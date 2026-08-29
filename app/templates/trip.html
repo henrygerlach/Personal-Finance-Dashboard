@@ -19,8 +19,18 @@
 {% endmacro %}
 
 {% macro queue_row(item) %}
+{# The checkbox is the decision. It used to be invisible — the row carried an
+   "It was the trip" button and a bulk button described the detector's own
+   pre-selection as "ticked", which nothing on the page ever showed. Pressing
+   it after working down the list then swept in every row that had not been
+   answered. Selection is now a thing you can see and change. #}
 <div class="trip-queue-row {{ 'is-dismissed' if item.dismissed }}"
      data-transaction="{{ item.id }}">
+  <label class="trip-pick">
+    <input type="checkbox" {{ "checked" if item.suggested }}
+           {{ "disabled" if item.claimed_by }}
+           aria-label="Count {{ item.merchant }} towards this trip" />
+  </label>
   <span class="detail-date">{{ item.date }}</span>
   <span class="detail-name">
     {{ item.merchant }}
@@ -28,21 +38,22 @@
     {% if item.suggested %}<span class="trip-reason">{{ item.reason }}</span>{% endif %}
     {% if item.claimed_by %}
     <span class="trip-claim">already counted in {{ item.claimed_by }}</span>
+    {% elif item.during_other %}
+    <span class="trip-claim">belongs to {{ item.during_other }}</span>
     {% endif %}
   </span>
   <span class="detail-amount num" data-amount="{{ item.amount }}"
         data-tone="sign"></span>
   <span class="trip-queue-actions">
-    <button type="button" class="ghost-button is-small" data-decision="included">
-      {{ "Add anyway" if item.claimed_by else "It was the trip" }}
-    </button>
+    {# Refusing is a different act from leaving a box unticked: it is
+       remembered, so the line is never proposed again. #}
     {% if item.dismissed %}
     <button type="button" class="ghost-button is-small is-clear" data-decision="">
       Undo
     </button>
     {% else %}
     <button type="button" class="ghost-button is-small" data-decision="excluded">
-      No
+      Never ask again
     </button>
     {% endif %}
   </span>
@@ -294,9 +305,9 @@
   <section class="section-block" aria-labelledby="queue-title">
     <div class="panel-head">
       <h2 class="panel-title" id="queue-title">Was this the trip?</h2>
-      {% if trip.suggested_count %}
-      <button type="button" class="ghost-button" id="trip-accept-all">
-        Add the {{ trip.suggested_count }} ticked
+      {% if trip.candidate_count %}
+      <button type="button" class="primary-button" id="trip-add-selected">
+        Add <span id="trip-selected-count">{{ trip.suggested_count }}</span>
       </button>
       {% endif %}
     </div>
@@ -311,7 +322,7 @@
       <h3 class="trip-phase-title">
         {{ phase_titles[phase] }}
         <span class="spectrum-caption">
-          {% if ticked %}{{ ticked|length }} ticked of {% endif %}{{ items|length }}
+          {% if ticked %}{{ ticked|length }} selected of {% endif %}{{ items|length }}
         </span>
       </h3>
       {% for item in ticked %}

@@ -131,6 +131,9 @@
         {% if item.currencies %}
         charged in {{ item.currencies|join(", ") }}
         {%- if item.countries %} · {% endif %}
+        {% elif item.converted %}
+        converted from another currency
+        {%- if item.countries %} · {% endif %}
         {% endif %}
         {% if item.countries %}
         country {{ "codes" if item.countries|length > 1 else "code" }}
@@ -224,7 +227,67 @@
   </section>
   {% endif %}
 
+  {% if overview.atlas.points %}
+  {#
+    Where the trips were. The destination is free text and stays free text —
+    it is resolved against an offline gazetteer in app/places.py rather than
+    replaced by a dropdown of countries, and anything it cannot place is named
+    under the map rather than quietly dropped.
+  #}
+  <section class="section-block" aria-labelledby="atlas-title">
+    <div class="panel-head">
+      <h2 class="panel-title" id="atlas-title">Everywhere you have been</h2>
+      <span class="spectrum-caption">
+        {{ overview.atlas.points|length }}
+        {{ "place" if overview.atlas.points|length == 1 else "places" }} ·
+        {{ overview.atlas.countries|length }}
+        {{ "country" if overview.atlas.countries|length == 1 else "countries" }}
+      </span>
+    </div>
+
+    <div class="atlas" id="atlas" data-world="{{ static_url('world.json') }}">
+      <svg class="atlas-map" xmlns="http://www.w3.org/2000/svg"
+           preserveAspectRatio="xMidYMid meet" role="img"
+           aria-label="A world map with a dot on each place these trips went."
+      ></svg>
+      <div class="atlas-pop" hidden></div>
+    </div>
+
+    {% if overview.atlas.unplaced %}
+    <p class="field-note">
+      Not on the map ·
+      {{ overview.atlas.unplaced|map(attribute="label")|join(" · ") }}
+    </p>
+    {% endif %}
+  </section>
+
+  <script id="atlas-data" type="application/json">
+    {{ overview.atlas|tojson }}
+  </script>
+  {% endif %}
+
   {% if overview.count %}
+  {#
+    When the trips were. One row per year rather than one long axis, because
+    the question a reader asks of four years of holidays is not only which
+    year each was in but where in the year — and rows of twelve months line up
+    under one another so that answer is readable across them.
+  #}
+  <section class="section-block" aria-labelledby="season-title">
+    <div class="panel-head">
+      <h2 class="panel-title" id="season-title">When you went</h2>
+      <span class="spectrum-caption">
+        {% set away = overview.trips|sum(attribute="summary.days") %}
+        {{ away }} {{ "day" if away == 1 else "days" }} away
+      </span>
+    </div>
+    <figure class="seasons" id="seasons"></figure>
+  </section>
+
+  <script id="trips-data" type="application/json">
+    {{ overview.trips|tojson }}
+  </script>
+
   <section class="section-block" aria-labelledby="trips-title">
     <div class="panel-head">
       <h2 class="panel-title" id="trips-title">What each one cost</h2>
@@ -245,10 +308,19 @@
           {% endif %}
         </div>
 
+        {# The list runs across years and the dates carry only a day and a
+           month, so which year a trip was is otherwise unanswerable from the
+           card. The year is stated once at the end, and twice when the trip
+           crosses midnight on the 31st — a New Year trip is the one case
+           where a single trailing year names the wrong one. #}
+        {% set began = trip.start_date[:4] %}
+        {% set ended = trip.end_date[:4] %}
         <p class="trip-dates">
           <span data-day="{{ trip.start_date }}">{{ trip.start_date }}</span>
+          {%- if began != ended %} <span class="trip-year">{{ began }}</span>{% endif %}
           &ndash;
           <span data-day="{{ trip.end_date }}">{{ trip.end_date }}</span>
+          <span class="trip-year">{{ ended }}</span>
           · {{ summary.days }} {{ "day" if summary.days == 1 else "days" }}
         </p>
 

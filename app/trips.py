@@ -67,7 +67,13 @@ from app.categories import (
     MINOR_PERSON_TO_PERSON,
     minor_categories,
 )
-from app.normalization import card_country, foreign_currency, merchant_key, merchant_of
+from app.normalization import (
+    card_country,
+    converted_abroad,
+    foreign_currency,
+    merchant_key,
+    merchant_of,
+)
 from app.utils import should_exclude_transaction
 
 #: How far before departure a booking may sit and still be proposed. A year,
@@ -82,6 +88,35 @@ BOOKING_LEAD_DAYS = 365
 #: on-the-ground travel spending lands, and that is what the lead-in must not
 #: mistake for a booking.
 BOOKING_MINORS = frozenset(minor_categories(MAJOR_TRAVEL)) - {"Other Travel"}
+
+#: Platforms that sell the things you do on a journey, booked from home
+#: before it starts. They are filed under Events & Culture rather than Travel,
+#: because a walking tour is an experience and not a flight — so the category
+#: rule above cannot see them, and a tour booked a fortnight before departure
+#: was left out of the very window it belongs in.
+#:
+#: Named platforms rather than the whole category on purpose: adding Events &
+#: Culture wholesale would drag a year of cinema and concerts at home into the
+#: lead-in. These are global services rather than anything particular to one
+#: ledger, the same reasoning that lets app.normalization name PayPal and
+#: SumUp. Anything not listed is still reachable through the search box.
+#:
+#: Matched against the space-free merchant key, because Comdirect wraps these
+#: names mid-word and inconsistently — "GETYOURG UIDE DEUTSCHLAND GMBH" and
+#: "GETYOURGUIDE DEUTSC HLAND GMBH" are the same merchant on two lines of the
+#: same statement.
+EXPERIENCE_PLATFORMS = frozenset(
+    {
+        "GETYOURGUIDE",
+        "VIATOR",
+        "KLOOK",
+        "TIQETS",
+        "MUSEMENT",
+        "CIVITATIS",
+        "HEADOUT",
+        "TOURRADAR",
+    }
+)
 
 #: Below this, a travel charge in the lead-in is listed but not ticked. A
 #: booking for a holiday next summer is a substantial payment; a few euros in
@@ -219,6 +254,17 @@ def is_travel(transaction) -> bool:
 TRIP_MONEY_TRANSFERS = frozenset({MINOR_CASH_WITHDRAWAL, MINOR_PERSON_TO_PERSON})
 
 
+def is_experience_platform(transaction) -> bool:
+    """
+    Whether this was bought from a platform that sells things done on a trip.
+
+    Matched on the space-free merchant key so that Comdirect's mid-word line
+    wrapping cannot hide a name from the list.
+    """
+    key = merchant_key(merchant_of(transaction))
+    return any(platform in key for platform in EXPERIENCE_PLATFORMS)
+
+
 def is_cash_withdrawal(transaction) -> bool:
     """Whether this is cash taken out — spending on a trip, wherever it is filed."""
     return getattr(transaction, "minor_category", None) == MINOR_CASH_WITHDRAWAL
@@ -312,18 +358,23 @@ def _booked_candidate(transaction, start: datetime) -> Candidate | None:
     catch the flight bought in March for August, and refusing to show a
     plausible one because it is unusual would defeat the window entirely.
     """
-    if transaction.minor_category not in BOOKING_MINORS:
+    experience = is_experience_platform(transaction)
+    if not experience and transaction.minor_category not in BOOKING_MINORS:
         return None
 
     days = (start - transaction.date).days
     when = f"{days} {'day' if days == 1 else 'days'} before departure"
 
-    if abs(transaction.amount) >= BOOKING_MIN_AMOUNT and days <= BOOKING_TICK_DAYS:
+    # A named experience platform needs no minimum: nobody books a walking
+    # tour by accident, and the small ones are exactly what gets missed. The
+    # horizon still applies, because an old one belongs to an earlier trip.
+    substantial = experience or abs(transaction.amount) >= BOOKING_MIN_AMOUNT
+    if substantial and days <= BOOKING_TICK_DAYS:
         return Candidate(
             str(transaction.id),
             PHASE_BOOKED,
             STRENGTH_STRONG,
-            f"a booking {when}",
+            f"an experience booked {when}" if experience else f"a booking {when}",
             suggested=True,
         )
     return Candidate(
@@ -632,8 +683,20 @@ TRIP_GAP_DAYS = 7
 MIN_TRIP_CHARGES = 2
 
 #: How many distinct days a cluster must span. A single day of foreign charges
-#: is a shopping session, whoever billed it.
+#: is usually a shopping session, whoever billed it.
 MIN_TRIP_DAYS = 2
+
+#: Stands in for a currency on the oldest card format, which records that a
+#: conversion happened and at what rate but never which currency it was from.
+#: Not a currency code, and never shown as one.
+CONVERTED_MARKER = "converted"
+
+#: What it takes for a single day to count as a trip on its own. A weekend
+#: away can leave every card payment on one day — seven conversions in Denmark
+#: in an afternoon is somebody standing in Denmark, not somebody shopping — so
+#: a dense enough day is admitted without a second one. Set above the two that
+#: an online order and its refund would produce.
+SAME_DAY_CHARGES = 3
 
 #: Charges above which a cluster is dense enough to be obvious. Below it a
 #: proposal is still shown, but as one worth a second look rather than a
@@ -706,6 +769,19 @@ def _abroad_marks(transaction, home: str | None) -> tuple[str | None, str | None
     code = card_country(transaction.booking_text)
     if code is not None and (home is None or code == home):
         code = None
+
+    # The oldest card format hides the same fact in a third place. It is the
+    # only marker there is for 2022 and most of 2023 — those lines carry no
+    # trailing country code and no "Betrag:" conversion — so without this the
+    # detector simply cannot see that far back.
+    if code is None and currency is None:
+        converted = converted_abroad(transaction.booking_text)
+        if converted is not None:
+            code = converted or None
+            # A rate with no country still says the card was used abroad, and
+            # the marker has to be truthy or the charge is not counted at all.
+            # It is a sentinel rather than a currency, and the page strips it.
+            currency = currency or CONVERTED_MARKER
     return code, currency
 
 
@@ -746,7 +822,9 @@ def find_trip_candidates(transactions) -> list[DetectedTrip]:
     for cluster in clusters:
         rows = [row[0] for row in cluster]
         days = {row.date.date() for row in rows}
-        if len(rows) < MIN_TRIP_CHARGES or len(days) < MIN_TRIP_DAYS:
+        if len(rows) < MIN_TRIP_CHARGES:
+            continue
+        if len(days) < MIN_TRIP_DAYS and len(rows) < SAME_DAY_CHARGES:
             continue
 
         countries = Counter(row[1] for row in cluster if row[1])
