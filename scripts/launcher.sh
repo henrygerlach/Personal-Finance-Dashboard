@@ -56,8 +56,13 @@ step "Starting the dashboard …"
 # The database settings live in .mise.toml, which only mise exports. They are set here as
 # well so that a missing mise does not silently send the app to the default port 27017,
 # where a different database would be waiting.
+#
+# DATABASE_NAME has to agree with .mise.toml and with the default in app/config.py.
+# It once read "bank_analyzer" here, which is the previous version's database: the
+# bundle then served the current frontend on stale data while "mise run dev" showed
+# the right one, and nothing in the UI gave that away.
 export MONGODB_URL="mongodb://localhost:$MONGO_PORT"
-export DATABASE_NAME="${DATABASE_NAME:-bank_analyzer}"
+export DATABASE_NAME="${DATABASE_NAME:-bank_analyzer_dev}"
 export PYTHONUNBUFFERED=1
 
 # uvicorn is started from Poetry's virtualenv directly instead of through
