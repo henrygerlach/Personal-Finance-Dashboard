@@ -14,6 +14,7 @@ from app.models import (
     ComdirectBalanceSnapshot,
     DismissedTripProposal,
     MerchantCategory,
+    PatternDismissal,
     PayPalRecord,
     RecurringOverride,
     Transaction,
@@ -50,6 +51,7 @@ class DatabaseManager:
                 Trip,
                 TripAssignment,
                 DismissedTripProposal,
+                PatternDismissal,
             ],
         )
         logger.info("Database connection established and Beanie initialized")

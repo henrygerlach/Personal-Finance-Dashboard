@@ -3352,3 +3352,253 @@ input:disabled {
     grid-template-columns: auto auto 1fr auto;
   }
 }
+
+/* ==========================================================================
+   Patterns — what changed
+
+   Two registers on one page. The figures at the top are structure: they are
+   true whether or not anything moved, so they are drawn in the chrome's own
+   greys with colour reserved for the two things that carry meaning — money
+   coming in, and a month above or below normal. The cards below them are
+   findings, and each one borrows its category's hue from the shared palette
+   so a card and the chart it came from read as the same subject.
+   ========================================================================== */
+
+/* The month figure carries three series against one axis and needs the room
+   to keep them apart. */
+.chart-wrapper.is-tall {
+  height: 380px;
+}
+
+.pattern-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap-md);
+  margin-top: var(--gap-sm);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--paper-faint);
+}
+
+.pattern-key-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.pattern-key-item i {
+  width: 14px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+/* --- Through the year ------------------------------------------------------
+   Bars from a line at a normal month rather than from the floor. What the
+   profile says is "this month runs above or below normal", and a bar rising
+   from zero says only that December exists. */
+
+.year-plot {
+  position: relative;
+  height: 120px;
+  border-radius: var(--radius-md);
+  background: var(--ink-1);
+  padding: 0 var(--gap-md);
+  overflow: hidden;
+}
+
+.year-normal {
+  position: absolute;
+  left: var(--gap-md);
+  right: var(--gap-md);
+  top: 50%;
+  border-top: 1px solid var(--rule-strong);
+}
+
+.year-bars {
+  position: absolute;
+  inset: 0 var(--gap-md);
+  display: flex;
+  align-items: center;
+}
+
+.year-slot {
+  position: relative;
+  flex: 1;
+  height: 100%;
+  display: flex;
+  justify-content: center;
+}
+
+.year-bar {
+  position: absolute;
+  top: 50%;
+  width: 46%;
+  max-width: 34px;
+  border-radius: 2px;
+}
+
+/* Above normal costs more and below normal costs less, which is the one place
+   on this page where the system signal colours mean exactly what they say. */
+.year-bar.is-over {
+  transform: translateY(-100%);
+  background: color-mix(in oklab, var(--neg) 72%, transparent);
+}
+
+.year-bar.is-under {
+  background: color-mix(in oklab, var(--pos) 72%, transparent);
+}
+
+/* A month with too few years behind it is drawn faintly rather than left out:
+   an empty slot would read as a month that costs nothing. */
+.year-bar.is-thin {
+  opacity: 0.28;
+}
+
+.year-axis {
+  display: flex;
+  margin: 4px var(--gap-md) 0;
+}
+
+.year-tick {
+  flex: 1;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  color: var(--paper-faint);
+}
+
+/* --- Findings --------------------------------------------------------------
+   Ranked by euros a month, so the grid fills in reading order and the eye
+   lands on the largest thing that moved. */
+
+.finding-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--gap-md);
+}
+
+.finding {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-xs);
+  padding: var(--gap-md);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: var(--ink-1);
+  transition:
+    border-color 0.18s ease,
+    transform 0.18s ease;
+}
+
+.finding:hover,
+.finding:focus-visible {
+  border-color: var(--rule-strong);
+  transform: translateY(-2px);
+  outline: none;
+}
+
+.finding-head {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-xs);
+}
+
+.finding-kind {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--paper-faint);
+}
+
+/* The card opens the popup, so the one control on it stays out of the way
+   until the card is under the cursor. */
+.finding-put-away {
+  opacity: 0;
+  width: 22px;
+  height: 22px;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.finding:hover .finding-put-away,
+.finding:focus-within .finding-put-away {
+  opacity: 1;
+}
+
+.finding-name {
+  font-size: 1rem;
+  overflow-wrap: anywhere;
+}
+
+.finding-headline {
+  font-family: var(--font-mono);
+  font-size: 1.35rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.finding-headline.is-positive {
+  color: var(--pos);
+}
+
+.finding-headline.is-negative {
+  color: var(--neg);
+}
+
+.finding-spark {
+  height: 32px;
+}
+
+.finding-spark svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.spark-zero {
+  stroke: var(--rule-strong);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.finding-caption {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  line-height: 1.5;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--paper-faint);
+}
+
+/* A card put away while the page is still open stays where it is, greyed:
+   removing it would move every card below it and lose the reader's place. */
+.finding.is-put-away {
+  opacity: 0.42;
+}
+
+.finding-grid.is-quiet {
+  margin-top: var(--gap-md);
+}
+
+.finding-grid.is-quiet .finding {
+  background: transparent;
+}
+
+/* The popup offers putting a finding away and bringing it back, and only one
+   of the two is ever a thing to do. */
+.override-actions button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* Not every finding has a series behind it — a schedule that stopped
+   collecting is an absence, and drawing a flat line for one would be drawing
+   data that does not exist. */
+.finding-spark:empty {
+  display: none;
+}

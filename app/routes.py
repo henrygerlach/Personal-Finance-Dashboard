@@ -27,6 +27,7 @@ from app.services import (
     CategorizationService,
     ChartDataService,
     ComdirectBalanceService,
+    PatternService,
     RecurringService,
     ReviewService,
     TripService,
@@ -286,6 +287,74 @@ async def clear_recurring_override(
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error))
     return {"status": "success", "cleared": cleared}
+
+
+# ============================================================================
+# Page Routes - Patterns
+# ============================================================================
+
+
+@router.get("/patterns", response_class=HTMLResponse)
+async def patterns_page(request: Request) -> HTMLResponse:
+    """
+    What changed in the spending, and what reliably does not.
+
+    The dashboard draws every month next to every other; this page is the part
+    that says which of those differences mean something. Everything on it is
+    recomputed from the history on each load, so nothing here is stored except
+    the findings the user has put away.
+    """
+    templates = get_templates()
+    return templates.TemplateResponse(
+        "patterns.html",
+        {
+            "request": request,
+            "title": "Patterns",
+            "active_path": "/patterns",
+            **await nav_counts(),
+            "overview": await PatternService.overview(),
+        },
+    )
+
+
+@router.post("/api/patterns/dismiss")
+async def dismiss_pattern(
+    kind: Annotated[str, Form()],
+    subject: Annotated[str, Form()] = "",
+    month: Annotated[str, Form()] = "",
+) -> dict:
+    """
+    Put one finding away.
+
+    Findings are recomputed on every load, so the dismissal is keyed on what
+    the finding *is* — its kind, its subject and the month it concerns —
+    rather than on any handle the page carries. The same category drifting
+    again next year is a different month, and is offered again.
+
+    Form fields:
+        kind: Which question produced it, e.g. ``drift`` or ``outlier``.
+        subject: The category or merchant it is about; empty for findings
+            about the ledger as a whole.
+        month: The month it concerns; empty where it concerns no single one.
+    """
+    try:
+        stored = await PatternService.dismiss(kind, subject, month)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return {"status": "success", "stored": stored}
+
+
+@router.post("/api/patterns/restore")
+async def restore_pattern(
+    kind: Annotated[str, Form()],
+    subject: Annotated[str, Form()] = "",
+    month: Annotated[str, Form()] = "",
+) -> dict:
+    """Hand one dismissed finding back to the page."""
+    return {
+        "status": "success",
+        "restored": await PatternService.restore(kind, subject, month),
+    }
 
 
 # ============================================================================

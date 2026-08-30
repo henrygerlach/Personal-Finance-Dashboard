@@ -70,9 +70,10 @@ Jinja templates + fetch() <── app/routes.py <── app/services.py <──�
   `pricing.py` (model prices, dated).
 - `app/paypal/` — recovers the payee Comdirect truncates out of PayPal lines by
   joining an activity export on amount, direction and settlement lag.
-- `app/recurrence.py`, `app/trips.py`, `app/places.py` — detection heuristics
-  for schedules, journeys and destinations. Pure functions over transactions,
-  no database access; they are the easiest things here to test.
+- `app/recurrence.py`, `app/trips.py`, `app/places.py`, `app/patterns.py` —
+  detection heuristics for schedules, journeys, destinations and changes in
+  the monthly spending. Pure functions over transactions, no database access;
+  they are the easiest things here to test.
 
 ### Classification funnel
 
@@ -82,6 +83,28 @@ truncated PayPal lines with no payee → the API for what is left. Every API
 result is then checked against the hierarchy and the confidence threshold;
 anything failing either becomes `Uncategorized / Needs Review` rather than a
 category nobody chose.
+
+### Pattern detection
+
+`app/patterns.py` decides which differences between one month and another mean
+something. Three rules hold across every detector in it and are the reason it
+produces a readable page rather than thirty cards:
+
+- **Robust statistics, never means.** Levels are medians and spread is the
+  median absolute deviation, so the holidays being looked for cannot raise the
+  bar that is meant to catch them.
+- **Every threshold is a share and a floor, and the floor is relative.** Every
+  absolute test is a fraction of that ledger's own median month, so the same
+  constants behave identically for a much larger or smaller one. A rule that
+  fires above a fixed number of euros is a rule written for one dataset.
+- **The trailing month is a lie until its statement lands.** `complete_months`
+  drops it, and the first month too. Comparing against a four-day month
+  reports the same spending collapse every time.
+
+Findings are proposals, ranked by euros a month and nothing else, each
+carrying the transactions that prove it. A `PatternDismissal` is keyed on the
+finding's own facts — kind, subject, month — because findings are recomputed
+from scratch on every page load.
 
 ### The legacy rule engine
 

@@ -545,3 +545,64 @@ class DismissedTripProposal(Document):
     class Settings:
         name = "dismissed_trip_proposals"
         indexes = [IndexModel([("anchor_id", ASCENDING)], unique=True, name="anchor")]
+
+
+class PatternDismissal(Document):
+    """
+    A finding about the spending that the user has looked at and put away.
+
+    Patterns are recomputed from scratch on every page load, for the same
+    reason schedules and trip proposals are: a new statement can end a drift,
+    start a season and turn an unusual month into an ordinary one, so nothing
+    about a finding is worth storing. The refusal is the exception. Without
+    it, "cafés are up thirty euros" — noticed, understood, and deliberately
+    being paid for — is offered again after every upload, forever.
+
+    Keyed on what the finding *is* rather than on any handle the page carries:
+    the kind of question, the thing it is about, and the month it concerns.
+    Those three are facts about the history, so they identify the same finding
+    on a later run, while a position in a ranked list or a hash of a payload
+    would quietly stop matching the moment another finding outranked it. This
+    is the same reasoning as :class:`RecurringOverride` and
+    :class:`DismissedTripProposal`.
+
+    A dismissal is deliberately *not* permanent for every future version of
+    the same subject. Cafés drifting up again next year is a new finding with
+    a new month, and it should be offered again — what was dismissed is this
+    move, not the category.
+    """
+
+    kind: str = Field(
+        ...,
+        description=(
+            "Which question produced the finding, e.g. 'drift' or 'outlier'. "
+            "See the KIND_* constants in app.patterns."
+        ),
+    )
+    subject: str = Field(
+        "",
+        description=(
+            "What the finding is about: a category name, a merchant key, or "
+            "empty for findings about the ledger as a whole."
+        ),
+    )
+    month: str = Field(
+        "",
+        description=(
+            "The YYYY-MM the finding concerns, or empty where it concerns no "
+            "single month, as a season does not."
+        ),
+    )
+    dismissed_at: datetime = Field(
+        default_factory=datetime.utcnow, description="When it was put away."
+    )
+
+    class Settings:
+        name = "pattern_dismissals"
+        indexes = [
+            IndexModel(
+                [("kind", ASCENDING), ("subject", ASCENDING), ("month", ASCENDING)],
+                unique=True,
+                name="kind_subject_month",
+            )
+        ]

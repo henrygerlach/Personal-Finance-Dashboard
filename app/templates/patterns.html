@@ -1,0 +1,198 @@
+{% extends "base.html" %}
+
+{#
+  The page answers one question: of all the differences between one month and
+  another, which ones mean something.
+
+  So it opens with structure rather than with news. The month figure and the
+  year profile are true whether or not anything changed — what a month costs,
+  how much of it was decided before it started, and which parts of the year
+  are reliably unlike the others. The findings come after that, ranked by
+  euros a month and by nothing else: the newest finding is not the largest,
+  and a page ordered by date buries the rent under a coffee shop.
+
+  Every card is a proposal. It carries the transactions that produced it, so
+  the claim can be opened and checked, and it can be put away — which is the
+  only thing on this page that is stored.
+#}
+
+{% set KIND_LABELS = {
+  "drift": "New level",
+  "outlier": "Unusual month",
+  "price": "Price change",
+  "lapsed": "Stopped collecting",
+  "commitment": "Committed floor",
+  "seasonal": "Season ahead",
+  "gone": "Went quiet",
+  "arrived": "New habit",
+  "mix": "Mix shift",
+  "savings": "Share kept",
+  "cash": "Cash"
+} %}
+
+{% macro finding_card(item) %}
+<article class="finding is-clickable"
+         data-finding="{{ item.id }}"
+         tabindex="0" role="button"
+         aria-label="{{ item.label }} — open the transactions behind this">
+  <div class="finding-head">
+    {% if item.category %}
+    <span class="cat-swatch" data-category="{{ item.category }}"></span>
+    {% endif %}
+    <span class="finding-kind">{{ KIND_LABELS.get(item.kind, item.kind) }}</span>
+    <button type="button" class="icon-button finding-put-away"
+            data-put-away="{{ item.id }}"
+            aria-label="Put this finding away">&times;</button>
+  </div>
+  <h3 class="finding-name">{{ item.label }}</h3>
+  <p class="finding-headline" data-headline="{{ item.headline }}"></p>
+  <div class="finding-spark" data-spark="{{ item.id }}" aria-hidden="true"></div>
+  {# Fragments joined with · rather than a sentence, and composed in the
+     script so every figure on the page is in one number format. #}
+  <p class="finding-caption" data-caption="{{ item.id }}"></p>
+</article>
+{% endmacro %}
+
+{% block content %}
+<section class="hero">
+  <div class="hero-text">
+    <span class="eyebrow">Detected from the history</span>
+    <h1>What changed</h1>
+    <p class="subtitle">
+      Measured against the last {{ overview.baseline_months }} months, in
+      medians, so one holiday cannot move the answer.
+    </p>
+  </div>
+  <div class="hero-stat">
+    <span class="hero-stat-value">{{ overview.count }}</span>
+    <span class="label">worth a look</span>
+  </div>
+</section>
+
+{% if overview.months %}
+<div class="chart-container stagger">
+  {# The one figure on the page that is not a finding. A month's spending
+     against the part of it that was already decided before the month began:
+     the gap between the two lines is everything a decision could still have
+     changed. #}
+  <section class="section-block" aria-labelledby="months-title">
+    <div class="panel-head">
+      <h2 class="panel-title" id="months-title">A month, and what was already decided</h2>
+      <span class="spectrum-caption" id="months-caption"></span>
+    </div>
+    <div class="chart-wrapper is-tall">
+      <canvas id="months-chart"></canvas>
+    </div>
+    <div class="pattern-key" id="months-key"></div>
+  </section>
+
+  {% if overview.seasonal %}
+  {# Twelve medians against the median of everything, so the bar for December
+     says "a December costs 1.4 normal months" rather than quoting a figure
+     that depends on which years happen to be in the file. #}
+  <section class="section-block" aria-labelledby="year-title">
+    <div class="panel-head">
+      <h2 class="panel-title" id="year-title">Through the year</h2>
+      <span class="spectrum-caption" id="year-caption"></span>
+    </div>
+    <figure class="year-profile">
+      <div class="year-plot" id="year-plot">
+        <div class="year-normal"></div>
+        <div class="year-bars" id="year-bars"></div>
+      </div>
+      <div class="year-axis" id="year-axis"></div>
+    </figure>
+  </section>
+  {% endif %}
+
+  {% if overview.findings %}
+  <section class="section-block" aria-labelledby="findings-title">
+    <div class="panel-head">
+      <h2 class="panel-title" id="findings-title">Findings</h2>
+      <span class="spectrum-caption">
+        ranked by euros a month · floor
+        <span data-money="{{ overview.floor }}"></span>
+      </span>
+    </div>
+    <div class="finding-grid">
+      {% for item in overview.findings %}
+      {{ finding_card(item) }}
+      {% endfor %}
+    </div>
+  </section>
+  {% else %}
+  <div class="panel-outline is-centered">
+    <p class="panel-title">Nothing has moved</p>
+    <p class="panel-text">
+      No category, schedule or merchant has changed by more than
+      <span data-money="{{ overview.floor }}"></span> a month against the year
+      behind it.
+    </p>
+  </div>
+  {% endif %}
+
+  {% if overview.dismissed %}
+  <details class="ended-block">
+    <summary>
+      <span class="ended-count">{{ overview.dismissed|length }}</span>
+      {{ "finding you put away" if overview.dismissed|length == 1
+         else "findings you put away" }}
+    </summary>
+    <div class="finding-grid is-quiet">
+      {% for item in overview.dismissed %}
+      {{ finding_card(item) }}
+      {% endfor %}
+    </div>
+  </details>
+  {% endif %}
+</div>
+{% else %}
+<div class="chart-container">
+  <div class="panel-outline is-centered">
+    <p class="panel-title">Nothing to read yet</p>
+    <p class="panel-text">
+      Patterns need whole months to compare. Upload a statement to begin.
+    </p>
+  </div>
+</div>
+{% endif %}
+
+{# Every card opens this one popup, the way every plot on the dashboard opens
+   the transaction drill-down. #}
+<div id="finding-modal" class="modal detail-modal" role="dialog"
+     aria-modal="true" aria-labelledby="finding-title" hidden>
+  <div class="modal-content is-single" role="document">
+    <div class="modal-header">
+      <h2 id="finding-title">
+        <span class="cat-swatch" id="finding-swatch"></span>
+        <span id="finding-heading"></span>
+      </h2>
+      <button class="icon-button" id="finding-close" aria-label="Close">
+        &times;
+      </button>
+    </div>
+    <p class="field-note" id="finding-summary"></p>
+
+    <div class="override-bar">
+      <span class="label">This finding</span>
+      <span id="finding-state" class="override-verdict"></span>
+      <div class="override-actions">
+        <button type="button" class="ghost-button" data-decision="dismiss">
+          Put away
+        </button>
+        <button type="button" class="ghost-button is-clear" data-decision="restore">
+          Bring back
+        </button>
+      </div>
+    </div>
+
+    <div class="detail-list" id="finding-rows"></div>
+  </div>
+</div>
+
+<script>
+  window.PATTERNS = {{ overview | tojson }};
+</script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
+<script src="{{ static_url('patterns.js') }}"></script>
+{% endblock %}
