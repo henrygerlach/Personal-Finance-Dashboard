@@ -265,6 +265,141 @@ a {
   color: var(--paper-dim);
 }
 
+/* --- The Insights menu ---------------------------------------------------- */
+
+/* The four readings of the ledger are siblings, and listing them flat made
+   them peers of a once-a-month upload. They collapse into one menu whose
+   label does not change with the page inside it: a label that renames itself
+   moves everything beside it every time you navigate. */
+.nav-menu {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: 100%;
+}
+
+.nav-menu-button {
+  border: 0;
+  background: transparent;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+/* Rotates when the menu is open, so the button says which state it is in
+   without the menu having to be in view. */
+.nav-caret {
+  width: 0;
+  height: 0;
+  border-left: 3.5px solid transparent;
+  border-right: 3.5px solid transparent;
+  border-top: 4px solid currentColor;
+  transition: transform 0.2s ease;
+}
+
+.nav-menu-button[aria-expanded="true"] .nav-caret {
+  transform: rotate(180deg);
+}
+
+.nav-menu-list {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 6px;
+  z-index: 50;
+  min-width: 172px;
+  display: flex;
+  flex-direction: column;
+  padding: var(--gap-xs);
+  background: var(--ink-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow);
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+
+/* The attribute alone would lose to the display above it. */
+.nav-menu-list[hidden] {
+  display: none;
+}
+
+.nav-menu-list.show {
+  opacity: 1;
+  transform: none;
+}
+
+.nav-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap-sm);
+  padding: 0.45rem 0.6rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.86rem;
+  color: var(--paper-dim);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.nav-menu-item:hover,
+.nav-menu-item:focus-visible {
+  background: var(--ink-3);
+  color: var(--paper);
+  outline: none;
+}
+
+.nav-menu-item.active {
+  color: var(--paper);
+}
+
+.nav-menu-rule {
+  height: 1px;
+  margin: var(--gap-xs) 0;
+  background: var(--rule);
+}
+
+/* The rule pages are the switched-off predecessor, kept reachable rather than
+   kept prominent. */
+.nav-menu-item.is-quiet {
+  color: var(--paper-faint);
+}
+
+/* --- Reading on the left, work on the right -------------------------------- */
+
+.nav-rule {
+  width: 1px;
+  height: 18px;
+  background: var(--rule);
+}
+
+/* Upload is a thing to do rather than a place to read, and the outline is
+   what says so without a second colour: the bar's chrome stays monochrome. */
+.nav-action {
+  height: auto;
+  padding: 0.32rem 0.7rem;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  font-size: 0.82rem;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.nav-action:hover {
+  background: var(--ink-2);
+}
+
+.nav-action.active {
+  background: var(--ink-3);
+  color: var(--paper);
+}
+
+/* The underline marks which page is open, and a bordered control already
+   shows that another way. */
+.nav-action::after {
+  display: none;
+}
+
 /* ==========================================================================
    Page shell
    ========================================================================== */
@@ -1551,8 +1686,20 @@ input:disabled {
 
   .nav {
     gap: var(--gap-md);
-    overflow-x: auto;
-    height: 44px;
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 44px;
+  }
+
+  /* The bar used to scroll sideways, which would clip the menu hanging off
+     it. Four items wrap instead. */
+  .nav-menu {
+    height: auto;
+  }
+
+  .nav-menu-list {
+    left: auto;
+    right: 0;
   }
 
   .nav-link {

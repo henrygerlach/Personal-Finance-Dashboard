@@ -14,6 +14,33 @@
     <script src="{{ static_url('theme.js') }}"></script>
   </head>
   <body>
+    {#
+      Three kinds of thing were sharing one flat list, and listing them flat
+      said they were peers: the page opened every day, four readings of the
+      same ledger, and work done once a month when a statement lands.
+
+      So the bar carries two destinations and the work sits apart on the
+      right. The four readings are siblings — each answers a different
+      question about the same transactions — and collapse into one menu that
+      keeps its label whatever page inside it is open, because a label that
+      renames itself moves the thing next to it every time you navigate.
+
+      The rule pages are the switched-off predecessor. They stay reachable,
+      below a divider at the foot of the menu, rather than spending two slots
+      in the bar; they only do anything while RULES_ENABLED is true.
+    #}
+    {% set readings = [
+      ("Recurring", "/recurring"),
+      ("Patterns", "/patterns"),
+      ("Merchants", "/merchants"),
+      ("Trips", "/trips")
+    ] %}
+    {% set legacy = [
+      ("Categorize", "/categorize"),
+      ("Rules", "/rules")
+    ] if RULES_ENABLED else [] %}
+    {% set inside_menu = active_path in (readings + legacy)|map(attribute=1)|list %}
+
     <header class="topbar">
       <a class="brand" href="/">
         <span class="brand-mark" aria-hidden="true"
@@ -22,46 +49,87 @@
         Comdirect Dashboard
       </a>
       <nav class="nav" aria-label="Primary">
-        {#
-          The rule pages are still reachable, but they are no longer part of
-          the daily path: the classifier categorises on import and Review is
-          where a decision gets made. Categorize and Rules only do anything
-          while RULES_ENABLED is true.
-        #}
-        {% set nav_items = [
-          ("Dashboard", "/"),
-          ("Upload", "/upload"),
-          ("Review", "/review"),
-          ("Recurring", "/recurring"),
-          ("Patterns", "/patterns"),
-          ("Merchants", "/merchants"),
-          ("Trips", "/trips")
-        ] %}
-        {% if RULES_ENABLED %}
-          {% set nav_items = nav_items + [
-            ("Categorize", "/categorize"),
-            ("Rules", "/rules")
-          ] %}
-        {% endif %}
-        {% for label, href in nav_items %}
-          <a
-            class="nav-link{% if active_path == href %} active{% endif %}"
-            href="{{ href }}"
-            {% if active_path == href %}aria-current="page"{% endif %}
+        <a
+          class="nav-link{% if active_path == '/' %} active{% endif %}"
+          href="/"
+          {% if active_path == "/" %}aria-current="page"{% endif %}
+        >
+          Dashboard
+        </a>
+
+        <div class="nav-menu">
+          <button
+            type="button"
+            class="nav-link nav-menu-button{% if inside_menu %} active{% endif %}"
+            id="insights-button"
+            aria-haspopup="menu"
+            aria-expanded="false"
+            aria-controls="insights-menu"
           >
-            {{ label }}
-            {%- if href == "/review" and review_count %}
-            <span class="nav-badge">{{ review_count }}</span>
-            {%- elif href == "/categorize" and uncategorized_count %}
-            <span class="nav-badge">{{ uncategorized_count }}</span>
-            {%- endif %}
-          </a>
-        {% endfor %}
+            Insights
+            <span class="nav-caret" aria-hidden="true"></span>
+          </button>
+          <div class="nav-menu-list" id="insights-menu" role="menu"
+               aria-labelledby="insights-button" hidden>
+            {% for label, href in readings %}
+            <a
+              class="nav-menu-item{% if active_path == href %} active{% endif %}"
+              role="menuitem"
+              href="{{ href }}"
+              {% if active_path == href %}aria-current="page"{% endif %}
+            >
+              {{ label }}
+            </a>
+            {% endfor %}
+            {% if legacy %}
+            <span class="nav-menu-rule" role="separator"></span>
+            {% for label, href in legacy %}
+            <a
+              class="nav-menu-item is-quiet{% if active_path == href %} active{% endif %}"
+              role="menuitem"
+              href="{{ href }}"
+              {% if active_path == href %}aria-current="page"{% endif %}
+            >
+              {{ label }}
+              {%- if href == "/categorize" and uncategorized_count %}
+              <span class="nav-badge">{{ uncategorized_count }}</span>
+              {%- endif %}
+            </a>
+            {% endfor %}
+            {% endif %}
+          </div>
+        </div>
+
+        {# Neither of these is a place to read; both are work, and the queue
+           has to carry its count where it can be seen without opening a
+           menu. #}
+        <span class="nav-rule" aria-hidden="true"></span>
+
+        <a
+          class="nav-link{% if active_path == '/review' %} active{% endif %}"
+          href="/review"
+          {% if active_path == "/review" %}aria-current="page"{% endif %}
+        >
+          Review
+          {%- if review_count %}
+          <span class="nav-badge">{{ review_count }}</span>
+          {%- endif %}
+        </a>
+
+        <a
+          class="nav-link nav-action{% if active_path == '/upload' %} active{% endif %}"
+          href="/upload"
+          {% if active_path == "/upload" %}aria-current="page"{% endif %}
+        >
+          Upload
+        </a>
       </nav>
     </header>
 
     <main class="page">
       {% block content %}{% endblock %}
     </main>
+
+    <script src="{{ static_url('nav.js') }}"></script>
   </body>
 </html>
