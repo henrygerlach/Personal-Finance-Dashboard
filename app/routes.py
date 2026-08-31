@@ -27,6 +27,7 @@ from app.services import (
     CategorizationService,
     ChartDataService,
     ComdirectBalanceService,
+    MerchantService,
     PatternService,
     RecurringService,
     ReviewService,
@@ -355,6 +356,31 @@ async def restore_pattern(
         "status": "success",
         "restored": await PatternService.restore(kind, subject, month),
     }
+
+
+@router.get("/merchants", response_class=HTMLResponse)
+async def merchants_page(request: Request) -> HTMLResponse:
+    """
+    Who actually gets the money, and how few of them there are.
+
+    The dashboard aggregates by category and stops there. This page opens a
+    category up: merchants ranked by what they were paid over the last
+    complete year, how much of the spending the top of that list holds, and
+    which categories are one merchant wearing a category's name. Nothing on it
+    is stored — concentration is a property of the history rather than a
+    proposal about it, so there is no decision to record.
+    """
+    templates = get_templates()
+    return templates.TemplateResponse(
+        "merchants.html",
+        {
+            "request": request,
+            "title": "Merchants",
+            "active_path": "/merchants",
+            **await nav_counts(),
+            "overview": await MerchantService.overview(),
+        },
+    )
 
 
 # ============================================================================

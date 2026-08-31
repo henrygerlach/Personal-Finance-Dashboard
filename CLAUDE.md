@@ -74,6 +74,11 @@ Jinja templates + fetch() <── app/routes.py <── app/services.py <──�
   detection heuristics for schedules, journeys, destinations and changes in
   the monthly spending. Pure functions over transactions, no database access;
   they are the easiest things here to test.
+- `app/merchants.py` — the same shape, but a level rather than a change: who
+  was paid over the last complete year, how few merchants hold the spending,
+  and which categories are one merchant wearing a category's name. Nothing on
+  the page it feeds is stored, because concentration is a property of the
+  history rather than a proposal about it.
 
 ### Classification funnel
 
@@ -166,3 +171,13 @@ lines", not "Add paypal module".
 `ANTHROPIC_API_KEY` lives in `.env`, which is gitignored. `.mise.toml` is in
 version control and must never hold a key. Optional Comdirect API credentials
 follow the same rule.
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).

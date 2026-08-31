@@ -3602,3 +3602,191 @@ input:disabled {
 .finding-spark:empty {
   display: none;
 }
+
+/* ==========================================================================
+   Merchants — who was paid, and how few of them there are
+   ========================================================================== */
+
+/* The headline strip is built for money and colours itself accordingly. Three
+   of the four figures on this page are counts, and a count of merchants
+   printed in the colour the app reserves for money leaving reads as a loss. */
+.headline-amount.is-plain {
+  color: var(--paper);
+}
+
+.merchant-list,
+.owned-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: var(--ink-1);
+  overflow: hidden;
+}
+
+/* A row rather than a card: forty of these are read as a ranking, and cards
+   at that count are forty boxes of chrome around one number each. */
+.merchant-row {
+  display: grid;
+  grid-template-columns: 2.2rem 1fr auto;
+  align-items: center;
+  gap: var(--gap-md);
+  padding: var(--gap-sm) var(--gap-md);
+  border-bottom: 1px solid var(--rule);
+  transition: background 0.12s ease;
+}
+
+.merchant-row:last-child {
+  border-bottom: none;
+}
+
+.merchant-row:hover,
+.merchant-row:focus-visible {
+  background: var(--ink-2);
+  outline: none;
+}
+
+.merchant-rank {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--paper-faint);
+  text-align: right;
+}
+
+.merchant-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-xs);
+}
+
+.merchant-name {
+  font-size: 0.9rem;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+/* Against the largest share on the page, so the ranking is readable before
+   any number on the row is. */
+.merchant-bar {
+  height: 3px;
+  border-radius: 999px;
+  background: var(--ink-3);
+  overflow: hidden;
+}
+
+.merchant-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+}
+
+.merchant-caption {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--paper-faint);
+}
+
+.merchant-total {
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  white-space: nowrap;
+}
+
+/* --- Inside a category ---------------------------------------------------- */
+
+/* Five columns, because the row is a sentence the eye reads across: the
+   category, how much of it one merchant holds, that share as a figure, whose
+   share it is, and how many others there are. */
+.owned-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(80px, 1.2fr) 4.5rem minmax(0, 1fr) 2.5rem;
+  align-items: center;
+  gap: var(--gap-md);
+  padding: var(--gap-sm) var(--gap-md);
+  border-bottom: 1px solid var(--rule);
+}
+
+.owned-row:last-child {
+  border-bottom: none;
+}
+
+.owned-name,
+.owned-leader {
+  font-size: 0.82rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.owned-leader {
+  color: var(--paper-dim);
+}
+
+/* The bar is a share of its own category rather than of the ledger, so these
+   are comparable down the column: a full bar is a category with one merchant
+   in it. The tick is where the top three reach, which is what says whether
+   the leader is alone or the first of a pair. */
+.owned-bar {
+  position: relative;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--ink-3);
+  overflow: hidden;
+}
+
+.owned-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+}
+
+.owned-bar i {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  border-right: 1px solid var(--paper-faint);
+}
+
+.owned-share,
+.owned-count {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  text-align: right;
+  color: var(--paper-dim);
+  white-space: nowrap;
+}
+
+.owned-count {
+  color: var(--paper-faint);
+}
+
+/* --- The popup ------------------------------------------------------------ */
+
+.merchant-spark {
+  height: 46px;
+  margin: var(--gap-sm) 0;
+}
+
+.merchant-spark svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+@media (max-width: 720px) {
+  /* The leader's name and the merchant count are what a narrow row can afford
+     to lose: the category, the bar and the share still answer the question. */
+  .owned-row {
+    grid-template-columns: minmax(0, 1fr) minmax(60px, 1fr) 4.5rem;
+  }
+
+  .owned-leader,
+  .owned-count {
+    display: none;
+  }
+}

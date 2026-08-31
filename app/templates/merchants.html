@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+
+{#
+  The page opens a category up.
+
+  A category total says how much went on food and stops exactly where the
+  question gets interesting, because two ledgers spending the same amount on
+  it are not the same ledger: one buys from a single shop and the other from
+  twenty, and only one of those can be changed by deciding one thing.
+
+  So the curve comes first. How few merchants hold half the spending is the
+  fact that decides whether the ranking below it is worth reading at all — a
+  list of forty names is a different object depending on whether the first
+  nine of them are most of the money or a tenth of it.
+
+  Nothing here is a proposal and nothing is stored. Concentration is a
+  property of the history rather than a claim about it, so there is no card to
+  put away and no decision to record.
+#}
+
+{% block content %}
+<section class="hero">
+  <div class="hero-text">
+    <span class="eyebrow">The last {{ overview.window_months }} complete months</span>
+    <h1>Where the money goes</h1>
+    <p class="subtitle">
+      Ranked by merchant rather than by category, so a category total gets a
+      name attached to it.
+    </p>
+  </div>
+  <div class="hero-stat">
+    <span class="hero-stat-value" data-share="{{ overview.leaderboard_share }}"></span>
+    <span class="label">in the top {{ overview.leaderboard }}</span>
+  </div>
+</section>
+
+{% if overview.merchants %}
+<div class="chart-container stagger">
+  <div class="headline-strip">
+    <div class="headline-card">
+      <h4>Merchants paid</h4>
+      <p class="headline-amount is-plain">{{ overview.count }}</p>
+    </div>
+    <div class="headline-card">
+      <h4>Half the spending</h4>
+      <p class="headline-amount is-plain">
+        {{ overview.half if overview.half else "—" }}
+      </p>
+    </div>
+    <div class="headline-card">
+      <h4>Four fifths</h4>
+      <p class="headline-amount is-plain">
+        {{ overview.four_fifths if overview.four_fifths else "—" }}
+      </p>
+    </div>
+    <div class="headline-card is-total">
+      <h4>Spent</h4>
+      <p class="headline-amount" data-money="{{ -overview.total }}"></p>
+    </div>
+  </div>
+
+  {# Cumulative share against rank. Drawn against the diagonal a ledger with
+     every merchant paid equally would follow, because the curve alone has no
+     scale: how far it bulges above that line is the concentration, and
+     without it a steep curve and a flat one look like the same picture. #}
+  <section class="section-block" aria-labelledby="curve-title">
+    <div class="panel-head">
+      <h2 class="panel-title" id="curve-title">How few merchants</h2>
+      <span class="spectrum-caption" id="curve-caption"></span>
+    </div>
+    <div class="chart-wrapper is-tall">
+      <canvas id="curve-chart"></canvas>
+    </div>
+  </section>
+
+  <section class="section-block" aria-labelledby="ranked-title">
+    <div class="panel-head">
+      <h2 class="panel-title" id="ranked-title">Who was paid</h2>
+      <span class="spectrum-caption" id="ranked-caption"></span>
+    </div>
+    <div class="merchant-list">
+      {% for item in overview.merchants %}
+      <article class="merchant-row is-clickable"
+               data-merchant="{{ item.key }}"
+               tabindex="0" role="button"
+               aria-label="{{ item.name }} — open the payments behind this">
+        <span class="merchant-rank num">{{ loop.index }}</span>
+        <div class="merchant-body">
+          <h3 class="merchant-name">
+            <span class="cat-swatch" data-category="{{ item.category }}"></span>
+            {{ item.name }}
+          </h3>
+          <div class="merchant-bar" aria-hidden="true">
+            <span data-category="{{ item.category }}"
+                  data-width="{{ item.share }}"></span>
+          </div>
+          <p class="merchant-caption" data-caption="{{ item.key }}"></p>
+        </div>
+        <span class="merchant-total num" data-money="{{ -item.total }}"></span>
+      </article>
+      {% endfor %}
+    </div>
+  </section>
+
+  {% if overview.categories %}
+  {# The same question asked inside one category, where a leader's share is
+     something a person can act on. Categories with fewer than
+     min_category_merchants names are left out: a category with one merchant
+     is trivially concentrated, which is a fact about the taxonomy. #}
+  <section class="section-block" aria-labelledby="inside-title">
+    <div class="panel-head">
+      <h2 class="panel-title" id="inside-title">Inside a category</h2>
+      <span class="spectrum-caption">
+        leader's share · {{ overview.min_category_merchants }}+ merchants
+      </span>
+    </div>
+    <div class="owned-list">
+      {% for share in overview.categories %}
+      <div class="owned-row">
+        <span class="owned-name">
+          <span class="cat-swatch" data-category="{{ share.category }}"></span>
+          {{ share.category }}
+        </span>
+        <div class="owned-bar" aria-hidden="true">
+          <span data-category="{{ share.category }}"
+                data-width="{{ share.leader_share }}"></span>
+          <i data-width="{{ share.top_share }}"></i>
+        </div>
+        <span class="owned-share num" data-percent="{{ share.leader_share }}"></span>
+        <span class="owned-leader">{{ share.leader }}</span>
+        <span class="owned-count num">{{ share.merchants }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+</div>
+{% else %}
+<div class="chart-container">
+  <div class="panel-outline is-centered">
+    <p class="panel-title">Nothing to rank yet</p>
+    <p class="panel-text">
+      A ranking needs whole months to read. Upload a statement to begin.
+    </p>
+  </div>
+</div>
+{% endif %}
+
+{# Every row opens this one popup, the way every plot on the dashboard opens
+   the transaction drill-down. #}
+<div id="merchant-modal" class="modal detail-modal" role="dialog"
+     aria-modal="true" aria-labelledby="merchant-title" hidden>
+  <div class="modal-content is-single" role="document">
+    <div class="modal-header">
+      <h2 id="merchant-title">
+        <span class="cat-swatch" id="merchant-swatch"></span>
+        <span id="merchant-heading"></span>
+      </h2>
+      <button class="icon-button" id="merchant-close" aria-label="Close">
+        &times;
+      </button>
+    </div>
+    <p class="field-note" id="merchant-summary"></p>
+    <div class="merchant-spark" id="merchant-spark" aria-hidden="true"></div>
+    <p class="field-note" id="merchant-history"></p>
+    <div class="detail-list" id="merchant-rows"></div>
+  </div>
+</div>
+
+<script>
+  window.MERCHANTS = {{ overview | tojson }};
+</script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
+<script src="{{ static_url('merchants.js') }}"></script>
+{% endblock %}
