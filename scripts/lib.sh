@@ -17,12 +17,21 @@ export PATH="/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin:$HOME/.local/shar
 export MISE_TRUSTED_CONFIG_PATHS="${MISE_TRUSTED_CONFIG_PATHS:+$MISE_TRUSTED_CONFIG_PATHS:}$REPO_DIR"
 
 HOST="${CD_HOST:-127.0.0.1}"
+# 8000 belongs to this dashboard. The other projects with a Spotlight launcher keep
+# clear of it and of each other, so all of them can be started at once: Comdirect
+# Dashboard I on 8010, the Kognitions-Tracker on 8081/8001, the Garmin Activity Map on
+# 5173/8787, the Post COVID Dashboard on 5017.
 PORT="${CD_PORT:-8000}"
 URL="http://$HOST:$PORT"
 
 # Mongo runs in a container; the name and the port mapping have to match .mise.toml,
 # where MONGODB_URL points at localhost:27018. mongod itself listens on 27017 inside
 # the container, hence the asymmetric mapping.
+#
+# The container is deliberately shared with the predecessor project, Comdirect
+# Dashboard I: one mongod, two databases (bank_analyzer_dev here, bank_analyzer there).
+# Sharing the port is therefore intended and not a collision — but the stopper must not
+# pull the container out from under the other dashboard; see other_mongo_clients().
 MONGO_CONTAINER="${CD_MONGO_CONTAINER:-mongo-bank}"
 MONGO_PORT="${CD_MONGO_PORT:-27018}"
 MONGO_IMAGE="mongo:latest"
@@ -74,6 +83,15 @@ running_pid() {
   [ -n "$pid" ] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
   echo "$pid"
+}
+
+# Is anything other than this dashboard still talking to the shared mongod? Called by
+# the stopper after its own server is gone, so every connection still standing on
+# $MONGO_PORT belongs to somebody else — in practice Comdirect Dashboard I. Stopping the
+# container underneath it would break it mid-request, so the stopper leaves the
+# container alone whenever this says yes.
+other_mongo_clients() {
+  /usr/sbin/lsof -nP -iTCP:"$MONGO_PORT" -sTCP:ESTABLISHED >/dev/null 2>&1
 }
 
 # The container runtime is whatever this machine happens to use: Colima on the

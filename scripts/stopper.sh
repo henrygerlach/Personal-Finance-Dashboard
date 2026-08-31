@@ -5,8 +5,9 @@
 # The container is only stopped, NEVER removed: it holds the imported transactions and
 # the categorization rules, and an accidental click in Spotlight must not delete them.
 #
-# Set CD_KEEP_MONGO=1 to leave the database container running (useful when another
-# project talks to the same container).
+# The container is also left alone automatically while another client is still connected
+# to it — Comdirect Dashboard I shares this mongod, with its own database inside it.
+# Set CD_KEEP_MONGO=1 to keep it running unconditionally.
 
 set -uo pipefail
 # shellcheck source=lib.sh
@@ -54,6 +55,11 @@ if [ "${CD_KEEP_MONGO:-0}" = "1" ]; then
   step "Leaving MongoDB running (CD_KEEP_MONGO=1)."
 elif ! docker info >/dev/null 2>&1; then
   step "Container runtime not running — nothing to stop there."
+elif other_mongo_clients; then
+  # Comdirect Dashboard I uses the same container with its own database. Both are meant
+  # to run side by side, so quitting this one must not take the shared mongod with it —
+  # the other dashboard would start failing queries without ever saying why.
+  step "Leaving MongoDB running — another dashboard is still using it."
 elif docker ps --filter "name=^${MONGO_CONTAINER}$" --format '{{.Names}}' | grep -q .; then
   step "Stopping MongoDB …"
   # Deliberately "stop", not "rm": the data stays in the container.
