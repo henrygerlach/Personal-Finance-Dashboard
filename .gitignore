@@ -32,3 +32,6 @@ paypal_data/
 # megabytes of source for the eight hundred kilobytes it commits; delete it
 # freely, the script fetches it again.
 .natural-earth-cache/
+
+# graphify
+graphify-out/
