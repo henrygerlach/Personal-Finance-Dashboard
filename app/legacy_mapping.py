@@ -112,9 +112,7 @@ RECLASSIFY: dict[LegacyPair, LegacyPair] = {
 def legacy_pairs() -> set[LegacyPair]:
     """Every pair the legacy hierarchy defines."""
     return {
-        (major, minor)
-        for major, minors in LEGACY_HIERARCHY.items()
-        for minor in minors
+        (major, minor) for major, minors in LEGACY_HIERARCHY.items() for minor in minors
     }
 
 

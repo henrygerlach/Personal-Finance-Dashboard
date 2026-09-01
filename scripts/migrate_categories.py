@@ -348,12 +348,12 @@ async def main() -> int:
     args = parser.parse_args()
 
     # A broken mapping table is a programming error, not a data problem.
-    assert not unmapped_legacy_pairs(), (
-        f"legacy pairs without a mapping: {sorted(unmapped_legacy_pairs())}"
-    )
-    assert not invalid_targets(), (
-        f"mapping targets outside the new hierarchy: {sorted(invalid_targets())}"
-    )
+    assert (
+        not unmapped_legacy_pairs()
+    ), f"legacy pairs without a mapping: {sorted(unmapped_legacy_pairs())}"
+    assert (
+        not invalid_targets()
+    ), f"mapping targets outside the new hierarchy: {sorted(invalid_targets())}"
 
     await db_manager.connect()
     try:

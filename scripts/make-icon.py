@@ -64,8 +64,9 @@ def main(path: str, variant: str = "run") -> None:
                     px[y][x] = bar_color
 
     if variant == "stop":
-        # A stop square centred over the flat bars. The grey bars alone would not read as
-        # "stopped" at small sizes; the square is a function symbol, not decoration.
+        # A stop square centred over the flat bars. The grey bars alone would
+        # not read as "stopped" at small sizes; the square is a function
+        # symbol, not decoration.
         half, r = 74, 12
         cx, cy = W // 2, int(H * 0.46)
         for y in range(cy - half, cy + half):
@@ -92,7 +93,11 @@ def main(path: str, variant: str = "run") -> None:
                 for x in range(int(min(x0, x1) - wid), int(max(x0, x1) + wid)):
                     if not (0 <= x < W and 0 <= y < H):
                         continue
-                    t = 0.0 if length2 == 0 else ((x - x0) * dx + (y - y0) * dy) / length2
+                    t = (
+                        0.0
+                        if length2 == 0
+                        else ((x - x0) * dx + (y - y0) * dy) / length2
+                    )
                     t = min(1.0, max(0.0, t))
                     px_, py_ = x0 + t * dx, y0 + t * dy
                     d = ((x - px_) ** 2 + (y - py_) ** 2) ** 0.5
