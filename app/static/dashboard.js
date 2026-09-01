@@ -348,6 +348,13 @@
 
   // --- Category spectrum ----------------------------------------------------
 
+  // How many categories the spectrum's key names before it rolls the rest
+  // into one row. Ten swatches is about as many as can be scanned and held;
+  // past that the key stops being a key and becomes a table. It also sits
+  // just above the number of major categories, so the key is usually whole
+  // at major granularity and only collapses where minors make it long.
+  const SPECTRUM_LIMIT = 10;
+
   /** Total expense per category, largest first. */
   function expenseTotals(data) {
     return (data.categories || [])
@@ -411,6 +418,10 @@
       return;
     }
 
+    // The bar keeps every category: it is the proportional picture, and a
+    // sliver still has a tooltip and a click on it. The key beside it is a
+    // key, and a key nobody can scan is not one — so it stops at the top
+    // few and says what it left out rather than running to forty rows.
     rows.forEach((row, index) => {
       const share = (row.spend / total) * 100;
       const color = categoryColor(row.category);
@@ -438,6 +449,13 @@
         label: row.category,
       });
       bar.appendChild(seg);
+    });
+
+    collapseTail(rows, "spend", SPECTRUM_LIMIT).forEach((row) => {
+      const share = (row.spend / total) * 100;
+      const color = row.muted
+        ? token("--rule-strong", "#35404e")
+        : categoryColor(row.category);
 
       const key = document.createElement("div");
       key.className = "spectrum-key";
@@ -450,10 +468,9 @@
       key.children[1].textContent = row.category;
       key.querySelector(".spectrum-value").textContent = formatCurrency(row.spend);
       key.querySelector(".spectrum-share").textContent = formatPercent(share);
-      makeElementClickable(key, {
-        categories: [row.category],
-        label: row.category,
-      });
+      // The collapsed row opens the whole tail it stands for, the way the
+      // breakdowns' collapsed wedge does.
+      makeElementClickable(key, breakdownScope(row));
       keys.appendChild(key);
     });
 
@@ -1106,11 +1123,18 @@
 
   const BREAKDOWN_LIMIT = 8;
 
-  /** Keep the top N and roll the tail into a single "Other categories" row. */
-  function collapseTail(rows, valueKey) {
-    if (rows.length <= BREAKDOWN_LIMIT + 1) return rows.slice();
-    const head = rows.slice(0, BREAKDOWN_LIMIT);
-    const tail = rows.slice(BREAKDOWN_LIMIT);
+  /**
+   * Keep the top N and roll the tail into a single "Other categories" row.
+   *
+   * The limit is a parameter because the doughnut legend and the spectrum's
+   * key have different room for rows, and nothing is collapsed unless doing
+   * so actually shortens the list: rolling one leftover category into a row
+   * reading "1 smaller categories" costs a line and saves none.
+   */
+  function collapseTail(rows, valueKey, limit = BREAKDOWN_LIMIT) {
+    if (rows.length <= limit + 1) return rows.slice();
+    const head = rows.slice(0, limit);
+    const tail = rows.slice(limit);
     const rest = tail.reduce((sum, row) => sum + row[valueKey], 0);
     head.push({
       category: `${tail.length} smaller categories`,
