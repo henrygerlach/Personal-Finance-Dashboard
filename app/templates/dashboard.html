@@ -41,14 +41,16 @@
   </section>
   {% endif %}
 
-  <!-- The spectrum doubles as the colour key for every chart below it. -->
+  {# The spectrum doubles as the colour key for every chart below it, so it is
+     drawn at the granularity those charts are drawn at: a key naming majors
+     over a stack of minors is a key for a chart that is not on the page. #}
   <section class="section-block spectrum" aria-labelledby="spectrum-title">
     <div class="panel-head">
-      <h2 class="panel-title" id="spectrum-title">Spend by major category</h2>
+      <h2 class="panel-title" id="spectrum-title">Spend by category</h2>
       <span class="spectrum-caption" id="spectrum-caption">Expenses</span>
     </div>
     <div class="spectrum-bar" id="spectrum-bar" role="img"
-         aria-label="Proportional spend by major category"></div>
+         aria-label="Proportional spend by category"></div>
     <div class="spectrum-keys" id="spectrum-keys"></div>
   </section>
 

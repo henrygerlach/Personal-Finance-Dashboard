@@ -30,9 +30,8 @@
     expense: null,
   };
 
-  // Latest API responses, kept so category toggles re-render without a fetch.
+  // Latest API response, kept so category toggles re-render without a fetch.
   let categoryData = null; // chart-data at the selected granularity
-  let majorData = null; // chart-data at major granularity, for the spectrum
 
   const el = (id) => document.getElementById(id);
 
@@ -434,12 +433,9 @@
           [`Period total${SEP}${formatCurrency(total)}`]
         )
       );
-      // The spectrum is drawn at major granularity whatever the page is set
-      // to, so its clicks have to say so rather than inherit the filter.
       makeElementClickable(seg, {
         categories: [row.category],
         label: row.category,
-        categoryType: "major",
       });
       bar.appendChild(seg);
 
@@ -457,7 +453,6 @@
       makeElementClickable(key, {
         categories: [row.category],
         label: row.category,
-        categoryType: "major",
       });
       keys.appendChild(key);
     });
@@ -1372,12 +1367,7 @@
     ]);
     if (stale()) return null;
 
-    const major =
-      granularity === "major" ? data : await fetchChartData(year, "major");
-    if (stale()) return null;
-
     categoryData = data;
-    majorData = major;
 
     if (filterNeedsRebuild) {
       buildCategoryFilter(data);
@@ -1385,7 +1375,7 @@
     }
 
     renderPeriodSummary(data.months);
-    renderSpectrum(majorData);
+    renderSpectrum(categoryData);
     renderMonthlyChart(data, selectedCategories());
     renderCashflowChart(cashflow);
     renderBreakdown(
