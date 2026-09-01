@@ -35,3 +35,7 @@ paypal_data/
 
 # graphify
 graphify-out/
+
+# claude
+CLAUDE.md
+.claude/
