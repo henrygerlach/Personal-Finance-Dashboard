@@ -99,3 +99,21 @@ docker exec mongo-bank mongodump --db="$DATABASE_NAME" --archive --gzip \
   > "backups/$DATABASE_NAME-$(date +%Y%m%d-%H%M%S).archive.gz"
 ls -lh backups/ | tail -3
 """
+
+# --- The demo database ------------------------------------------------------
+#
+# The README's screenshots must not be of a real bank statement, so they are
+# taken against an invented one in a third database. Both tasks below set
+# DATABASE_NAME themselves; seed_demo.py refuses to run against a name that
+# does not end in _demo, which is what keeps it away from the other two.
+
+[tasks.seed-demo]
+description = "Fill the demo database with the synthetic ledger the screenshots use"
+env = { DATABASE_NAME = "bank_analyzer_demo" }
+run = "poetry run python scripts/seed_demo.py"
+
+[tasks.dev-demo]
+description = "Run the dashboard against the demo database"
+depends = ["mongo"]
+env = { DATABASE_NAME = "bank_analyzer_demo" }
+run = "poetry run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000"

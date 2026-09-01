@@ -1,88 +1,139 @@
-# 🏦 Comdirect Personal Finance Dashboard
-**A Fullstack FastAPI & MongoDB Application for Automated Wealth Tracking.**
+# Comdirect Personal Finance Dashboard
+
+**A monthly bank statement, read properly.** Upload the CSV your bank exports,
+and get back a categorised ledger, the schedules hiding inside it, what changed
+since last month, and what each holiday actually cost.
 
 [![FastAPI](https://img.shields.io/badge/FastAPI-005571?style=flat&logo=fastapi)](https://fastapi.tiangolo.com)
 [![MongoDB](https://img.shields.io/badge/MongoDB-%234ea94b.svg?style=flat&logo=mongodb)](https://www.mongodb.com)
-[![Poetry](https://img.shields.io/badge/Poetry-%233B48CC.svg?style=flat&logo=python)](https://python-poetry.org)
-[![Tested with Pytest](https://img.shields.io/badge/Tests-Passing-brightgreen?logo=pytest)](/tests)
+[![Claude API](https://img.shields.io/badge/Claude_API-D97757?style=flat&logo=anthropic&logoColor=white)](https://docs.anthropic.com)
+[![Tests](https://img.shields.io/badge/tests-523_in_0.7s-brightgreen?logo=pytest)](/tests)
 
-> **The Value:** Transforming messy CSV bank exports into actionable financial insights. Featuring a custom rule-based engine for automated transaction categorization.
+![Dashboard](assets/dashboard.png)
 
-## 🖼️ Dashboard Preview
-![Dashboard Overview](assets/dashboard.png)
-*Interactive charts showing spending patterns and net cashflow trends.*
+Categorisation is done by the Claude API against a fixed 14 × 73 taxonomy, not
+by hand-written string rules — but the API is the last step of the funnel, and
+most transactions never reach it.
 
-## 🧩 Create Rule Preview
-![Create Rule View](assets/categorize.png)
-*Rule creation interface for assigning automatic transaction categories. Rules are composed of a substring of the booking text and an optional process.*
+> Every screenshot here is of a synthetic ledger built by
+> `scripts/seed_demo.py`. No real statement appears on this page.
 
-![Creating a rule](assets/create-rule.gif)
-*Filing one transaction: pick the categories, enter the substring, optionally pin the process, and save. The queue advances and the new rule lands in the rule library.*
+---
 
-## 🚀 Technical Highlights & "The Hard Stuff"
-* **Advanced Categorization Engine:** Implemented a rule-based matching system that evaluates rules in creation order to automate 90% of manual bookkeeping.
-* **Data Integrity:** MD5-based hashing for transaction deduplication – ensuring clean data even with overlapping CSV imports.
-* **Modern Stack:** Asynchronous database access via **Beanie ODM**, containerized environment with **Docker**, and dependency management with **Mise/Poetry**.
-* **PayPal Payee Recovery:** Joins PayPal activity exports to the bank statement on amount, direction and settlement delay, recovering the merchant Comdirect truncates out of its PayPal lines — 96.8% of them, with ties refused rather than guessed.
-* **Optional Startup Sync:** On app start, account balances can optionally be fetched from the Comdirect API to refresh balance snapshots.
-* **Resilience:** Implemented a fallback mechanism for Comdirect API outages, serving cached balance snapshots from MongoDB.
+## Trips
 
-## 🏗️ System Architecture
+The dates of a holiday do not contain its spending: flights are bought months
+ahead, the last night abroad reaches the bank a week after the flight home, and
+somebody settles their half of the house in October. So the app only watches
+for the card reporting from somewhere that is not home, and proposes the window.
+
+![Trips](assets/trips.png)
+
+Confirming one creates the trip; from then on membership is explicit, and the
+three windows around the dates only decide what gets offered. Cash withdrawn
+abroad counts as spending here even though it is a transfer everywhere else —
+what it turned into never reaches the bank.
+
+![One trip](assets/trip.png)
+
+## Review
+
+The classifier declines rather than guessing. Filing one by hand also writes the
+merchant cache, so the next payment to that shop never costs an API call.
+
+![Filing a transaction from the review queue](assets/review.gif)
+
+---
+
+## The parts worth reading
+
+**The funnel is ordered on purpose.** Merchant cache → PayPal payee recovery →
+a deterministic fallback for lines holding no merchant → the API for the rest. A
+`source="user"` entry outranks the model permanently, and every API result is
+checked against the hierarchy and a confidence threshold before it is stored.
+
+**Recovering the payee Comdirect throws away.** Many PayPal debits arrive as
+`PP.5189.PP . , Ihr Ei nkauf bei Ref. …`, with no payee in them. Nothing links
+the two sides by identity, so a bank line is matched to the PayPal settlement on
+amount, direction and a one-sided booking lag, then the payee is followed back
+through `related_code`. Ties are refused rather than guessed; it recovered 150
+of 155 truncated lines on the ledger it was built against.
+
+**Detection proposes, the user decides.** Hand-made decisions live in their own
+collections, not as fields on `Transaction`, because transactions get rewritten
+by re-import and the repair scripts. Each is keyed on the facts that identify
+the thing — merchant + period + amount, the anchor transaction — never on an id,
+because findings are recomputed on every page load.
+
+**Robust statistics.** The month-over-month detectors use medians and MAD, never
+means, or the holidays raise the bar meant to catch them. Thresholds are shares
+of that ledger's own median month, and the trailing month is dropped until its
+statement lands.
+
+**The map does not phone home.** Free-text destinations resolve against an
+800 KB Natural Earth gazetteer in the repo, rather than handing a third party
+the list of places its user has been on holiday.
+
+**One taxonomy.** `app/categories.py` is the only place a category list may
+exist, and `flow_type` is derived from the major category rather than stored, so
+transfers cannot leak into an expense total.
+
+**523 tests in 0.7 seconds, no database.** The detection modules are pure
+functions, so the suite stands documents up with `SimpleNamespace`.
+
+## Architecture
+
 ```mermaid
 graph LR
-    subgraph Data_Sources
+    subgraph Sources
         CSV[Comdirect CSV]
-        API[Comdirect API]
+        PP[PayPal activity export]
     end
 
-    subgraph Backend_App ["FastAPI Core"]
-        Parser[CSV Parser]
-        Engine[Categorizer Engine]
-        Serv[Business Services]
+    subgraph Ingest
+        Parser[parser.py<br/>MD5 dedup]
+        Norm[normalization.py<br/>booking line to merchant key]
     end
 
-    subgraph Storage
-        DB[(MongoDB / Beanie)]
+    subgraph Classification
+        Cache[(merchant cache)]
+        Ledger[paypal/ledger.py]
+        API[Claude API]
     end
 
-    subgraph Frontend
-        UI[Chart.js Dashboards]
+    subgraph Reading
+        Det[recurrence · patterns<br/>trips · merchants]
+        Routes[routes.py + services.py]
     end
 
-    CSV --> Parser
-    API --> Serv
-    Parser --> Engine
-    Engine --> DB
-    Serv --> UI
-    DB --> Serv
+    DB[(MongoDB / Beanie)]
+
+    CSV --> Parser --> Norm --> Cache
+    PP --> Ledger --> Cache
+    Cache -->|miss| API
+    API --> DB
+    Cache --> DB
+    DB --> Det --> Routes --> UI[Jinja + Chart.js]
 ```
 
-## 🚀 Quick Start
-This project uses mise for toolchain management, environment and tasks.
+<details>
+<summary><strong>Running it</strong></summary>
 
-```Bash
-# 1. Toolchain and dependencies
+Everything goes through [mise](https://mise.jdx.dev), which also sets
+`MONGODB_URL` and `DATABASE_NAME`. Starting `uvicorn` without those two points
+the app at port 27017, where nothing is listening.
+
+```bash
 mise trust          # mise refuses to read an untrusted config
 mise install
 mise run install
 
-# 2. The API key for classification
 echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
 
-# 3. Launch — the database starts with it
-mise run dev
+mise run dev        # http://127.0.0.1:8000, starts MongoDB with it
 ```
 
-Visit http://127.0.0.1:8000.
-
-`.mise.toml` sets `MONGODB_URL` and `DATABASE_NAME`. Without it the app falls
-back to port 27017 while the container publishes 27018, and dies on the first
-query — so start through mise, or export those two yourself.
-
-The API key stays out of `.mise.toml` on purpose: that file is in version
-control, `.env` is not.
-
-### Tasks
+The key stays out of `.mise.toml`: that file is in version control, `.env` is not.
 
 | | |
 |---|---|
@@ -90,96 +141,86 @@ control, `.env` is not.
 | `mise run mongo` | just the database |
 | `mise run test` / `lint` / `format` | the usual |
 | `mise run backup` | dump the working database before anything that rewrites it |
+| `mise run seed-demo` / `dev-demo` | the synthetic ledger the screenshots use |
 | `mise run merchants` | how well normalization collapses transactions onto merchants |
-| `mise run migrate` | migrate categories to the new taxonomy (`-- --dry-run` to preview) |
+| `mise run migrate` | migrate categories to the current taxonomy |
 | `mise run backfill` | classify transactions still holding a provisional category |
 | `mise run repair-refunds` | re-file transactions whose category disagrees with their direction |
-| `mise run migrate-merchant-directions` | give every merchant cache entry the direction it speaks for (`-- --dry-run`) |
+| `mise run migrate-merchant-directions` | give every cache entry the direction it speaks for |
 | `mise run eval` | score the classifier against the hand-made categories |
 | `mise run import-paypal` | store PayPal activity exports (`-- paypal_data/`) |
-| `mise run resolve-paypal` | re-file PayPal lines whose payee the export recovered (`-- --dry-run`) |
+| `mise run resolve-paypal` | re-file PayPal lines whose payee the export recovered |
 
-## 💸 PayPal: putting the missing payee back
+Every script that writes supports `--dry-run`. Run that first.
 
-Comdirect truncates the merchant out of many PayPal debits, leaving lines like
-`PP.5189.PP . , Ihr Ei nkauf bei Ref. ...` — a payment with no payee. Nothing
-in that string identifies a merchant, so the pipeline used to file them all
-under one placeholder category.
+</details>
 
-A PayPal activity export knows who was paid. Importing one lets the classifier
-put the payee back, after which the line is an ordinary merchant line and goes
-through the ordinary funnel — cache, classifier, correction in the UI.
+<details>
+<summary><strong>The screenshots</strong></summary>
 
-```Bash
-# PayPal -> Activity -> Download -> CSV, one year at a time (the export caps
-# the range). Either language works; overlapping downloads are deduplicated.
-mise run import-paypal -- paypal_data/
+```bash
+mise run seed-demo   # writes bank_analyzer_demo, and only that
+mise run dev-demo
+```
 
-# Transactions already in the database, re-filed with the payee restored.
+`scripts/seed_demo.py` generates two years of an invented current account from a
+fixed seed, and refuses to run against any database whose name does not end in
+`_demo` — it drops every collection it touches, and the other two databases in
+the container hold real statements.
+
+The ledger is built to exercise the detectors: standing charges with price rises
+and a cancellation, three stretches abroad in both of the card formats Comdirect
+uses, a utility settlement, a café habit drifting up over the last quarter, and
+a review queue of lines that hold nothing to classify.
+
+</details>
+
+<details>
+<summary><strong>PayPal exports</strong></summary>
+
+```bash
+mise run import-paypal -- paypal_data/   # PayPal -> Activity -> Download -> CSV
 mise run resolve-paypal -- --dry-run
 mise run resolve-paypal
 ```
 
-The upload page accepts PayPal exports too — they are recognised by their
-header and routed to the ledger instead of the statement parser, so both kinds
-of CSV go through the same control.
+Overlapping downloads are deduplicated, and the upload page accepts these files
+too. Deferred payment ("Pay in 30 days") breaks the pointer the join follows, so
+the ledger falls back to matching the settled amount against the balance
+movements around it and flags that as `linked_by_amount`.
 
-**How the join works.** Nothing links the two sides by identity: the reference
-Comdirect prints is a SEPA mandate, and the export has no column carrying it.
-So a bank line is matched to the PayPal *settlement* — the row that moves money
-between PayPal and the bank — on amount to the cent, direction, and a booking
-delay of nought to five days, which is one-sided because the bank never books
-before PayPal pulls. The settlement itself names nobody; the payee is found by
-following its `related_code` back to the payment, twice over when a refund sits
-in between.
+</details>
 
-**Pay in 30 days.** Deferred payment breaks that chain: PayPal pays the shop
-at the till, so nothing reaches the bank at the time, and collects a month
-later. The collection is what the bank sees, and it names *PayPal* rather than
-the shop and points at nothing. PayPal is never accepted as a payee — it is
-the processor between the two parties — so where the pointer is missing the
-ledger matches the settled amount against the balance movements around it and
-follows that to the shop instead. The same shape covers a refund that was
-withdrawn to the bank without a pointer joining the two rows. This is thinner
-evidence than a pointer, so it is used only in its absence and flagged as
-`linked_by_amount` on the settlement.
+<details>
+<summary><strong>Start and stop from Spotlight (macOS)</strong></summary>
 
-Ties are refused rather than guessed. Two people paid ten euros each in the
-same week produce two candidates and no way to choose, so the line keeps the
-fallback category and stays visible as unresolved.
-
-On the dataset this was built against, 150 of 155 truncated lines (96.8%)
-recovered their payee. Most turned out not to be shopping at all but payments
-to friends and family, which moved €3,406 of outflow out of the spending
-totals and into transfers.
-
-## 🍏 Start & Stop from Spotlight (macOS)
-Install two small app bundles once:
-
-```Bash
+```bash
 ./scripts/install-macos-app.sh
 ```
 
-Afterwards `cmd+space` → **Comdirect Dashboard** starts MongoDB and the server and opens
-the browser once the page really answers; **Stop Comdirect Dashboard** shuts both down
-again — the container is only stopped, never removed, so all transactions and rules stay.
+`cmd+space` → **Comdirect Dashboard** starts MongoDB and the server and opens the
+browser once the page answers; **Stop Comdirect Dashboard** shuts both down. The
+container is stopped, never removed.
 
-The bundles only contain a stub; the logic lives in `scripts/launcher.sh` and
-`scripts/stopper.sh`, so changes take effect without reinstalling. Both write to
-`~/Library/Logs/Comdirect-Dashboard.log`.
+The bundles hold only a stub — a small compiled binary, because macOS grants
+Documents-folder access by the signature of the running process and a shell
+script would run as `/bin/bash`. The logic lives in `scripts/launcher.sh` and
+`scripts/stopper.sh`, so changes need no reinstall. If access is refused:
 
-> The project lives in the Documents folder, which macOS protects, so both bundles
-> need permission for it — without it they cannot even read their own scripts. Their
-> stub is therefore a small compiled binary (built by the install script, which needs
-> the Xcode command line tools): macOS decides about folder access by the signature of
-> the running process, and a shell script as the bundle's executable would run as
-> `/bin/bash` — a system binary the granted permission never matches, so the app would
-> be denied silently and do nothing at all.
->
-> Should an app still report missing access, add it under *System Settings → Privacy &
-> Security → Full Disk Access*, or let macOS ask again:
->
-> ```Bash
-> tccutil reset SystemPolicyDocumentsFolder local.comdirect.dashboard
-> tccutil reset SystemPolicyDocumentsFolder local.comdirect.stopper
-> ```
+```bash
+tccutil reset SystemPolicyDocumentsFolder local.comdirect.dashboard
+tccutil reset SystemPolicyDocumentsFolder local.comdirect.stopper
+```
+
+</details>
+
+<details>
+<summary><strong>The switched-off predecessor</strong></summary>
+
+`app/categorizer.py`, `CATEGORY_HIERARCHY` in `app/constants.py`,
+`app/legacy_mapping.py` and the `/categorize` and `/rules` pages are a
+hand-written substring rule engine that served 2,676 transactions and 609 rules
+before the classifier replaced it. It is switched off behind
+`settings.rules_enabled` rather than deleted, so the decision stays reversible.
+
+</details>
