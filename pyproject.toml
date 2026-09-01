@@ -4,6 +4,7 @@ name = "comdirect-dashboard"
 version = "0.1.0"
 description = "Full-stack bank transaction categorizer and dashboard"
 authors = ["Henry Gerlach <150011457+henrygerlach@users.noreply.github.com>"]
+license = "MIT"
 readme = "README.md"
 packages = [{include = "app"}]
 
