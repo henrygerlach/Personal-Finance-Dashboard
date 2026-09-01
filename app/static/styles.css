@@ -3662,6 +3662,27 @@ input:disabled {
   color: var(--paper-faint);
 }
 
+/* Same pill as the recurring page's flags, so a marked card reads the same
+   way in both places. It carries a signal colour because it is the only
+   thing on the page that the last statement changed — everything else was
+   already true before it landed. */
+.finding-flag {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border: 1px solid var(--rule-strong);
+  border-radius: 999px;
+  padding: 0 0.4rem;
+  color: var(--paper-faint);
+  white-space: nowrap;
+}
+
+.finding-flag.is-new {
+  color: var(--pos);
+  border-color: var(--pos);
+}
+
 /* The card opens the popup, so the one control on it stays out of the way
    until the card is under the cursor. */
 .finding-put-away {

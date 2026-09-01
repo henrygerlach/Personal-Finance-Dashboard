@@ -72,6 +72,22 @@ KIND_MIX = "mix"  # the composition moved while the total held
 KIND_SAVINGS = "savings"  # the share of income kept changed
 KIND_CASH = "cash"  # cash withdrawal habits changed
 
+#: The kinds whose ``month`` is the month the analysis was run to rather than
+#: a date the finding is *about*. A drift is measured over a window ending at
+#: the newest complete month, so its month changes with every statement while
+#: the finding stays the same one; an outlier or a price change is dated to
+#: the event, and a second one later is a second finding. :func:`emerged` has
+#: to tell those apart, or every windowed finding would look new every month.
+WINDOW_KINDS = frozenset(
+    {
+        KIND_DRIFT,
+        KIND_COMMITMENT,
+        KIND_MIX,
+        KIND_SAVINGS,
+        KIND_CASH,
+    }
+)
+
 #: Every kind there is, so a dismissal that could never match a finding is
 #: refused when it is written rather than sitting in the collection forever.
 KINDS = frozenset(
@@ -1547,4 +1563,64 @@ def analyse(
         findings=tuple(findings),
         floor=round(floor, 2),
         reference=months[-1],
+    )
+
+
+# --- What is new -------------------------------------------------------------
+
+
+def before(transactions: Sequence, month: str) -> list:
+    """
+    The ledger as it stood before ``month`` landed.
+
+    Used to ask what the page would have said a statement ago. The cut is by
+    month rather than by a number of days because that is the unit statements
+    arrive in: half of August in the comparison would report every August
+    finding as new and half of them as smaller than they are.
+    """
+    return [t for t in transactions if month_key(t.date) < month]
+
+
+def _identity(pattern: Pattern) -> tuple:
+    """
+    What makes a finding the same finding across two runs of the analysis.
+
+    The month is part of it only where the month is something the finding is
+    about. For everything in :data:`WINDOW_KINDS` the month is just where the
+    window happened to end, and including it would make every one of them a
+    different finding every time a statement lands.
+    """
+    if pattern.kind in WINDOW_KINDS:
+        return (pattern.kind, pattern.subject)
+    return pattern.key
+
+
+def emerged(current: Analysis, earlier: Analysis) -> frozenset[tuple[str, str, str]]:
+    """
+    The keys of the findings the ledger did not already carry a month ago.
+
+    A finding is new when the same analysis run against the ledger without its
+    newest complete month did not produce it. That is a stronger claim than
+    "concerns the newest month", which most of these findings do by
+    construction: a drift is always measured to the newest month, and marking
+    every drift new every month would say nothing at all.
+
+    Novelty is *marked*, never ranked on. The page is ordered by euros a month
+    and nothing else, because the newest finding is not the largest one.
+
+    Args:
+        current: The analysis the page is drawing.
+        earlier: The same analysis over :func:`before` the reference month.
+
+    Returns:
+        The ``(kind, subject, month)`` keys in ``current`` that are new. Empty
+        when ``earlier`` has no complete months to have had an opinion: a
+        ledger one month long has nothing to be new against, and flagging all
+        of it would be an answer where there is no question.
+    """
+    if not earlier.months:
+        return frozenset()
+    seen = {_identity(pattern) for pattern in earlier.findings}
+    return frozenset(
+        pattern.key for pattern in current.findings if _identity(pattern) not in seen
     )

@@ -40,6 +40,14 @@
     <span class="cat-swatch" data-category="{{ item.category }}"></span>
     {% endif %}
     <span class="finding-kind">{{ KIND_LABELS.get(item.kind, item.kind) }}</span>
+    {# Marked, never ranked on: the page stays ordered by euros a month,
+       because the newest finding is not the largest one. A finding is new
+       when the same analysis over the ledger without its newest complete
+       month did not produce it — not merely when it concerns that month,
+       which most of them do by construction. #}
+    {% if item.new %}
+    <span class="finding-flag is-new">New</span>
+    {% endif %}
     <button type="button" class="icon-button finding-put-away"
             data-put-away="{{ item.id }}"
             aria-label="Put this finding away">&times;</button>

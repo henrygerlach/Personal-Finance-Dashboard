@@ -33,7 +33,9 @@ from app.patterns import (
     KIND_SEASONAL,
     Schedule,
     analyse,
+    before,
     complete_months,
+    emerged,
 )
 
 #: Every test ledger ends here, on a month boundary, so nothing is discarded
@@ -959,3 +961,80 @@ def test_an_empty_ledger_produces_nothing_rather_than_failing():
 
     assert result.findings == ()
     assert result.months == ()
+
+
+# --- What the last statement changed ------------------------------------------
+#
+# "New" is a claim about the difference the newest statement made, not about
+# which month a finding mentions. Most findings on the page mention the newest
+# month by construction — a drift is always measured to it — so the two are
+# easy to confuse and the confusion would mark the whole page new every month.
+
+
+def test_a_finding_the_newest_month_produced_is_new():
+    rows = ledger(months=30)
+    rows += [spend(0, 3000.0, day=22, tid="spike")]
+
+    current = analyse(rows)
+    earlier = analyse(before(rows, current.reference))
+
+    assert only(current, KIND_OUTLIER).key in emerged(current, earlier)
+
+
+def test_a_windowed_finding_is_not_new_just_because_its_month_moved():
+    """
+    The case the whole comparison exists for.
+
+    A drift is keyed on the month the window ends at, so its key changes with
+    every statement even when the finding is the same one the page showed
+    last month. Comparing keys rather than identities would put "New" on
+    every drift, every mix and every cash finding forever, which is the same
+    as putting it on none of them.
+    """
+    rows = ledger(months=30)
+    rows += [
+        spend(offset, 100.0, day=20, tid=f"extra-{offset}-{i}")
+        for offset in range(5)
+        for i in range(2)
+    ]
+
+    current = analyse(rows)
+    earlier = analyse(before(rows, current.reference))
+
+    drift = only(current, KIND_DRIFT)
+    assert drift.month == current.reference
+    assert drift.month != earlier.reference
+    assert drift.key not in emerged(current, earlier)
+
+
+def test_a_finding_dated_to_an_older_month_is_not_new():
+    """An expensive month stays as old as it was; it does not renew itself."""
+    rows = ledger(months=30)
+    rows += [spend(5, 3000.0, day=22, tid="spike")]
+
+    current = analyse(rows)
+    earlier = analyse(before(rows, current.reference))
+
+    assert only(current, KIND_OUTLIER).key not in emerged(current, earlier)
+
+
+def test_nothing_is_new_when_there_is_nothing_to_be_new_against():
+    """
+    A ledger one statement long has no previous state to differ from.
+
+    Marking all of it new would answer a question the data cannot answer, and
+    the first page a user ever opens would be entirely flagged.
+    """
+    rows = ledger(months=30)
+
+    assert emerged(analyse(rows), analyse([])) == frozenset()
+
+
+def test_the_earlier_ledger_stops_before_the_month_being_compared():
+    rows = ledger(months=30)
+    reference = analyse(rows).reference
+
+    kept = before(rows, reference)
+
+    assert kept
+    assert max(t.date for t in kept).strftime("%Y-%m") < reference

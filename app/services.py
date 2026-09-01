@@ -44,6 +44,8 @@ from app.patterns import (
     Pattern,
     Schedule,
     analyse,
+    before,
+    emerged,
 )
 from app.places import atlas
 from app.recurrence import (
@@ -2009,7 +2011,7 @@ class PatternService:
         }
 
     @staticmethod
-    def _render(pattern: Pattern, by_id: dict) -> dict:
+    def _render(pattern: Pattern, by_id: dict, fresh: frozenset) -> dict:
         """
         One finding as the page needs it, proof included.
 
@@ -2022,6 +2024,7 @@ class PatternService:
         rows = [by_id[tid] for tid in pattern.transaction_ids if tid in by_id]
         return {
             "id": "|".join(pattern.key),
+            "new": pattern.key in fresh,
             "kind": pattern.kind,
             "subject": pattern.subject,
             "month": pattern.month,
@@ -2051,19 +2054,32 @@ class PatternService:
         recurring = await RecurringService.overview()
         dismissals = await PatternDismissal.find_all().to_list()
 
-        analysis = analyse(
-            transactions,
-            # Dismissed runs are not schedules — the user has said so — and
-            # ended ones still are: what they cost while they ran is what
-            # makes the commitment floor a history rather than a snapshot.
-            schedules=PatternService._schedules(
-                [
-                    item
-                    for item in recurring["items"]
-                    if item["override"] != OVERRIDE_DISMISSED
-                ]
+        # Dismissed runs are not schedules — the user has said so — and ended
+        # ones still are: what they cost while they ran is what makes the
+        # commitment floor a history rather than a snapshot.
+        schedules = PatternService._schedules(
+            [
+                item
+                for item in recurring["items"]
+                if item["override"] != OVERRIDE_DISMISSED
+            ]
+        )
+        trip_of = await PatternService._trip_names()
+
+        analysis = analyse(transactions, schedules=schedules, trip_of=trip_of)
+
+        # The same analysis over the ledger without its newest complete month,
+        # so a finding can say whether the last statement is what produced it.
+        # Recomputed rather than remembered: findings are derived from the
+        # transactions, and a stored first-seen would go stale behind a
+        # re-import or a re-classification without ever saying so.
+        fresh = emerged(
+            analysis,
+            analyse(
+                before(transactions, analysis.reference),
+                schedules=schedules,
+                trip_of=trip_of,
             ),
-            trip_of=await PatternService._trip_names(),
         )
 
         by_id = {str(t.id): t for t in transactions}
@@ -2071,7 +2087,7 @@ class PatternService:
 
         live, hidden = [], []
         for pattern in analysis.findings:
-            rendered = PatternService._render(pattern, by_id)
+            rendered = PatternService._render(pattern, by_id, fresh)
             (hidden if pattern.key in put_away else live).append(rendered)
 
         months = list(analysis.months)

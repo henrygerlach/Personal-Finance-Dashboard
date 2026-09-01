@@ -148,10 +148,28 @@ def test_a_finding_carries_the_transactions_that_prove_it():
         transaction_ids=("t1", "missing"),
     )
 
-    rendered = PatternService._render(pattern, {"t1": transaction})
+    rendered = PatternService._render(pattern, {"t1": transaction}, frozenset())
 
     assert rendered["id"] == "drift|Groceries|2026-07"
     assert [row["id"] for row in rendered["rows"]] == ["t1"]
+
+
+def test_a_finding_the_last_statement_produced_is_marked_new():
+    """
+    The mark is carried on the finding rather than worked out on the page:
+    whether the newest statement produced it is a question about two runs of
+    the analysis, and the page has only ever seen one of them.
+    """
+    pattern = Pattern(
+        kind=KIND_DRIFT,
+        subject="Groceries",
+        month="2026-07",
+        label="Groceries",
+        headline=42.0,
+    )
+
+    assert PatternService._render(pattern, {}, frozenset({pattern.key}))["new"]
+    assert not PatternService._render(pattern, {}, frozenset())["new"]
 
 
 def test_a_finding_that_was_put_away_is_kept_out_of_the_live_list(monkeypatch):
