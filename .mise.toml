@@ -49,6 +49,10 @@ run = "poetry run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000"
 description = "Run the test suite"
 run = "poetry run pytest"
 
+[tasks.coverage]
+description = "Run the test suite and report line coverage per module"
+run = "poetry run pytest --cov=app --cov-report=term-missing"
+
 [tasks.lint]
 description = "Check formatting and lint rules"
 run = ["poetry run ruff check app tests scripts", "poetry run ruff format --check app tests scripts"]
