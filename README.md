@@ -1,10 +1,10 @@
-# Comdirect Personal Finance Dashboard
+# Comdirect Dashboard
 
 A self-hosted FastAPI application that turns a Comdirect CSV export into a
 categorised ledger and reads the schedules, trips and month-over-month changes
 hidden inside it.
 
-[![CI](https://github.com/henrygerlach/Comdirect-Dashboard-III/actions/workflows/ci.yml/badge.svg)](https://github.com/henrygerlach/Comdirect-Dashboard-III/actions/workflows/ci.yml)
+[![CI](https://github.com/henrygerlach/comdirect-dashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/henrygerlach/comdirect-dashboard/actions/workflows/ci.yml)
 
 German bank exports are a booking line, an amount and a date. The merchant is
 buried in machine text that varies on every visit to the same shop, and payment
@@ -167,11 +167,11 @@ century, is a bad trade.
 Python and Poetry are installed by mise itself.
 
 ```bash
-git clone <repo-url> && cd "Comdirect Dashboard III"
+git clone <repo-url> && cd comdirect-dashboard
 
 mise trust          # mise refuses to read an untrusted config
 mise install        # Python 3.11 + Poetry
-mise run install    # poetry install
+mise run install    # poetry install --all-extras
 
 echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
 
@@ -273,8 +273,10 @@ been handed the answer and inflate the score by exactly that much.
 
 `.github/workflows/ci.yml` runs `ruff check`, `ruff format --check` and the
 suite on every push and pull request. It needs no service container and no
-secrets: the tests reach neither MongoDB nor the Claude API, so a run costs
-nothing and cannot be flaky for either reason.
+credentials of any kind: the tests reach neither MongoDB nor the Claude API,
+and the one private dependency — the optional Comdirect API client — is an
+extra that a plain `poetry install` skips. So a run costs nothing, holds no
+secret to rotate, and cannot be flaky for any of those reasons.
 
 Stated plainly, what does not exist: coverage is measured but not enforced, so
 nothing fails a build for dropping it. mypy is a dependency but is not wired
@@ -294,3 +296,5 @@ uncovered 3% is mostly defensive branches and the third-party Comdirect glue.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+Not affiliated with comdirect bank AG.

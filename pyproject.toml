@@ -2,7 +2,7 @@
 [tool.poetry]
 name = "comdirect-dashboard"
 version = "0.1.0"
-description = "Full-stack bank transaction categorizer and dashboard"
+description = "Turns Comdirect CSV exports into a categorised ledger — LLM classification behind a merchant cache, recurring-payment and trip detection, 840 tests at 97% coverage"
 authors = ["Henry Gerlach <150011457+henrygerlach@users.noreply.github.com>"]
 license = "MIT"
 readme = "README.md"
@@ -19,7 +19,17 @@ python-multipart = "^0.0.7"
 pydantic-settings = "^2.1.0"
 anthropic = "^1.0.0"
 jinja2 = "^3.1.3"
-comdirect-rest-api = { git = "git@github.com:henrygerlach/Comdirect-REST-API.git", branch = "main" }
+# Optional, and named by an SSH remote to a private repository. Nothing
+# outside ComdirectBalanceService imports it, and that import is inside the
+# method rather than at module scope, so the app, the scripts and the whole
+# test suite run without it. Keeping it out of the default install is what
+# lets CI install this project with no credentials for that repository.
+comdirect-rest-api = { git = "git@github.com:henrygerlach/Comdirect-REST-API.git", branch = "main", optional = true }
+
+# Installed by `mise run install`, which passes --all-extras. A developer who
+# wants the live account balances needs this; nothing else does.
+[tool.poetry.extras]
+comdirect = ["comdirect-rest-api"]
 
 [tool.poetry.group.dev.dependencies]
 ruff = "^0.2.0"

@@ -27,8 +27,12 @@ DATABASE_NAME = "bank_analyzer_dev"
 # control. It is read from .env, which is not.
 
 [tasks.install]
+# --all-extras pulls in the optional Comdirect API client, which lives in a
+# private repository and needs an SSH key. It is deliberately optional so that
+# CI can install this project without one; a developer here has the key, and
+# without the client the live account balances are the only thing missing.
 description = "Install the Python dependencies into Poetry's virtualenv"
-run = "poetry install"
+run = "poetry install --all-extras"
 
 [tasks.mongo]
 description = "Start MongoDB in Docker, creating the container on first run"

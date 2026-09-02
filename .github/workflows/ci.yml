@@ -14,7 +14,8 @@
 #
 # It needs no secrets either. Nothing under tests/ reaches the Claude API — the
 # client is driven by a fake — so there is no ANTHROPIC_API_KEY, and a CI run
-# cannot cost money.
+# cannot cost money. The one private dependency is an optional extra that a
+# plain `poetry install` skips, so there is no deploy key either.
 
 name: CI
 
@@ -50,13 +51,10 @@ jobs:
           python-version: "3.11"
           cache: poetry
 
-      # pyproject names the Comdirect API dependency by its SSH remote, which
-      # is right for a developer with a key loaded and unreachable from a
-      # runner. The repository behind it is public, so rewriting the protocol
-      # is enough — no deploy key, and pyproject keeps working locally.
-      - name: Reach the git dependency over HTTPS
-        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
-
+      # No --all-extras, and that is the point: the Comdirect API client is an
+      # optional extra pointing at a private repository over SSH, so a plain
+      # install is the one a runner can do with no credentials at all. Nothing
+      # under tests/ imports it.
       - name: Install dependencies
         run: poetry install --no-interaction
 

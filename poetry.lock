@@ -225,7 +225,7 @@ pycparser = {version = "*", markers = "implementation_name != \"PyPy\""}
 name = "charset-normalizer"
 version = "3.4.5"
 description = "The Real First Universal Charset Detector. Open, modern and actively maintained alternative to Chardet."
-optional = false
+optional = true
 python-versions = ">=3.7"
 files = [
     {file = "charset_normalizer-3.4.5-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:4167a621a9a1a986c73777dbc15d4b5eac8ac5c10393374109a343d4013ec765"},
@@ -372,7 +372,7 @@ files = [
 name = "comdirect-rest-api"
 version = "0.1.1"
 description = "Python wrapper for the Comdirect REST API"
-optional = false
+optional = true
 python-versions = ">=3.10"
 files = []
 develop = false
@@ -2349,7 +2349,7 @@ cffi = {version = "*", markers = "implementation_name == \"pypy\""}
 name = "requests"
 version = "2.32.5"
 description = "Python HTTP for Humans."
-optional = false
+optional = true
 python-versions = ">=3.9"
 files = [
     {file = "requests-2.32.5-py3-none-any.whl", hash = "sha256:2462f94637a34fd532264295e186976db0f5d453d1cdd31473c85a6a161affb6"},
@@ -2537,7 +2537,7 @@ files = [
 name = "urllib3"
 version = "2.6.3"
 description = "HTTP library with thread-safe connection pooling, file post, and more."
-optional = false
+optional = true
 python-versions = ">=3.9"
 files = [
     {file = "urllib3-2.6.3-py3-none-any.whl", hash = "sha256:bf272323e553dfb2e87d9bfd225ca7b0f467b919d7bbd355436d3fd37cb0acd4"},
@@ -2840,7 +2840,10 @@ files = [
     {file = "websockets-16.0.tar.gz", hash = "sha256:5f6261a5e56e8d5c42a4497b364ea24d94d9563e8fbd44e78ac40879c60179b5"},
 ]
 
+[extras]
+comdirect = ["comdirect-rest-api"]
+
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.11"
-content-hash = "1fd239722aca4768a11c0ff4f37e6fe7c422363cf49c032ca95a3e584059e359"
+content-hash = "26e4d8aed44dc97cc02889cbc4123238cfb9dca448437d18594136ef3b1535e3"
