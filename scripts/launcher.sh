@@ -1,5 +1,5 @@
 #!/bin/bash
-# Start logic behind the macOS app bundle "Personal Finance Dashboard".
+# Start logic behind the macOS app bundle "Personal-Finance-Dashboard".
 #
 # The bundle only contains a stub calling this file — changes here take effect
 # immediately, without reinstalling the app.

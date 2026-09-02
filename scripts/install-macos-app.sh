@@ -3,7 +3,7 @@
 # Spotlight.
 #
 # Usage: ./scripts/install-macos-app.sh
-# Then:  cmd+space -> "Personal Finance Dashboard" -> Enter
+# Then:  cmd+space -> "Personal-Finance-Dashboard" -> Enter
 #
 # The bundles contain only a stub; the actual logic stays in scripts/launcher.sh and
 # scripts/stopper.sh inside the project. Changes there take effect immediately, without
@@ -131,13 +131,13 @@ PLIST
   echo "Installed: $app"
 }
 
-make_bundle "Personal Finance Dashboard"      launcher.sh run  dashboard
-make_bundle "Stop Personal Finance Dashboard" stopper.sh  stop stopper
+make_bundle "Personal-Finance-Dashboard"      launcher.sh run  dashboard
+make_bundle "Stop Personal-Finance-Dashboard" stopper.sh  stop stopper
 
 echo
 echo "Done."
-echo "  Start: cmd+space -> \"Personal Finance Dashboard\""
-echo "  Stop:  cmd+space -> \"Stop Personal Finance Dashboard\""
+echo "  Start: cmd+space -> \"Personal-Finance-Dashboard\""
+echo "  Stop:  cmd+space -> \"Stop Personal-Finance-Dashboard\""
 echo "Address: http://127.0.0.1:8000"
 echo
 echo "The project lives in ~/Documents, which macOS protects. Both apps need permission"

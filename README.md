@@ -1,4 +1,4 @@
-# Personal Finance Dashboard
+# Personal-Finance-Dashboard
 
 A self-hosted FastAPI application that turns a Comdirect CSV export into a
 categorised ledger and reads the schedules, trips and month-over-month changes
@@ -170,8 +170,8 @@ accepts the same files.
 ./scripts/install-macos-app.sh
 ```
 
-`cmd+space` → **Personal Finance Dashboard** starts MongoDB and the server and opens the
-browser once the page answers; **Stop Personal Finance Dashboard** shuts both down. The
+`cmd+space` → **Personal-Finance-Dashboard** starts MongoDB and the server and opens the
+browser once the page answers; **Stop Personal-Finance-Dashboard** shuts both down. The
 bundles hold only a small compiled stub, because macOS grants Documents-folder
 access by the signature of the running process and a shell script would run as
 `/bin/bash`. The logic lives in `scripts/launcher.sh` and `scripts/stopper.sh`, so

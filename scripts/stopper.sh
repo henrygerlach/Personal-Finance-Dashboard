@@ -1,5 +1,5 @@
 #!/bin/bash
-# Logic behind the macOS app bundle "Stop Personal Finance Dashboard".
+# Logic behind the macOS app bundle "Stop Personal-Finance-Dashboard".
 #
 # Stops the uvicorn process started by launcher.sh and afterwards the MongoDB container.
 # The container is only stopped, NEVER removed: it holds the imported transactions and

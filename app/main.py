@@ -32,7 +32,7 @@ async def lifespan(app: FastAPI):
 
 # Initialize FastAPI app with lifespan management
 app = FastAPI(
-    title="Personal Finance Dashboard",
+    title="Personal-Finance-Dashboard",
     description="Bank transaction categorizer and analytics dashboard",
     version="0.1.0",
     lifespan=lifespan,
