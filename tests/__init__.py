@@ -1,3 +1,3 @@
 """
-Test suite for the Comdirect Dashboard application.
+Test suite for the Personal Finance Dashboard application.
 """
