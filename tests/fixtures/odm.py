@@ -131,8 +131,8 @@ class FakeDocument:
     fresh one.
 
     Ids are 24-character hex strings rather than anything more readable,
-    because the services parse them: ``TripService._get`` builds a
-    ``PydanticObjectId`` and treats a failure to parse as "no such trip", so a
+    because the services parse them: ``TripService._get`` puts them through
+    ``object_id`` and treats a failure to parse as "no such trip", so a
     friendlier id would make every lookup here miss for the wrong reason.
     """
 
@@ -205,3 +205,33 @@ def document(name: str, *fields: str) -> type:
     namespace = {field: FieldRef(field) for field in fields}
     namespace["rows"] = []
     return type(name, (FakeDocument,), namespace)
+
+
+def patch_services(monkeypatch, **replacements) -> None:
+    """
+    Put a stand-in in front of every service module that reads the real name.
+
+    The services are one module per page, and each imports the documents it
+    needs into its own namespace. Patching the name on a single module
+    therefore reaches only that page's code, and a test covering two pages
+    would silently exercise the real document on one of them. This walks the
+    package and replaces the name wherever it is actually bound.
+
+    Args:
+        replacements: name -> what the services should see instead.
+    """
+    import importlib
+    import pkgutil
+
+    import app.services
+
+    modules = [
+        importlib.import_module(f"app.services.{found.name}")
+        for found in pkgutil.iter_modules(app.services.__path__)
+    ]
+    for name, replacement in replacements.items():
+        bound = [module for module in modules if hasattr(module, name)]
+        if not bound:
+            raise AssertionError(f"No service module reads {name!r}")
+        for module in bound:
+            monkeypatch.setattr(module, name, replacement)

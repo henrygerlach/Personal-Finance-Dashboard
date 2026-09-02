@@ -18,8 +18,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from app import services as services_module
 from app.services import TOP_DETAIL_TRANSACTIONS, ChartDataService
+from tests.fixtures.odm import patch_services
 
 
 def tx(tid="1", amount=-10.0, day=14, **extra):
@@ -65,10 +65,9 @@ def use_transactions(monkeypatch, transactions):
                     rows = [row for row in rows if row.date < value]
             return rows
 
-    monkeypatch.setattr(
-        services_module,
-        "Transaction",
-        SimpleNamespace(
+    patch_services(
+        monkeypatch,
+        Transaction=SimpleNamespace(
             date=_DateField(),
             find=lambda *conditions: Query(conditions),
             find_all=lambda: Query(()),

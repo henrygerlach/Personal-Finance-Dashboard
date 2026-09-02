@@ -17,10 +17,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from app import services as services_module
 from app.models import TRIP_EXCLUDED, TRIP_INCLUDED
 from app.services import MAX_SPLIT_WAYS, TripService
-from tests.fixtures.odm import document
+from tests.fixtures.odm import document, patch_services
 
 
 def run(coro):
@@ -38,8 +37,13 @@ def db(monkeypatch):
         Transaction=document("Transaction", "id"),
         DismissedTripProposal=document("DismissedTripProposal", "anchor_id"),
     )
-    for name in ("Trip", "TripAssignment", "Transaction", "DismissedTripProposal"):
-        monkeypatch.setattr(services_module, name, getattr(models, name))
+    patch_services(
+        monkeypatch,
+        Trip=models.Trip,
+        TripAssignment=models.TripAssignment,
+        Transaction=models.Transaction,
+        DismissedTripProposal=models.DismissedTripProposal,
+    )
     return models
 
 
@@ -810,3 +814,54 @@ def test_confirming_a_trip_retires_the_proposal_that_led_to_it(db):
     make_trip(db, start="2026-07-01", end="2026-07-08")
 
     assert run(TripService.proposals())["proposals"] == []
+
+
+def test_a_trip_id_that_is_not_an_id_is_no_trip_rather_than_a_crash(db):
+    """
+    Trip ids come out of the URL, so a mistyped one is an ordinary request.
+    The lookup answers "no such trip" for it, which the route turns into a
+    404, rather than letting the id parser's own error out as a 500.
+    """
+    import asyncio
+
+    with pytest.raises(ValueError):
+        asyncio.run(TripService.detail("not-an-id"))
+
+
+def test_search_finds_a_match_beyond_the_first_page(db, monkeypatch):
+    """
+    The ledger is walked in pages from the recent end rather than read into
+    memory whole, so the page boundary is a place a match can be lost.
+    """
+    patch_services(monkeypatch, TRIP_SEARCH_PAGE=3)
+    trip = make_trip(db)
+    for n in range(7):
+        make_transaction(db, f"n{n}", date=f"2026-06-{20 - n:02d}", text="EDEKA")
+    make_transaction(db, "old", date="2026-01-02", text="RYANAIR DUBLIN")
+
+    assert [row["id"] for row in run(TripService.search(str(trip.id), "ryanair"))] == [
+        "old"
+    ]
+
+
+def test_search_stops_reading_once_it_has_enough(db, monkeypatch):
+    """
+    The point of paging: a search for something bought recently must not read
+    every transaction ever imported to answer with the newest twenty-five.
+    """
+    patch_services(monkeypatch, TRIP_SEARCH_PAGE=25)
+    trip = make_trip(db)
+    for n in range(200):
+        make_transaction(db, f"n{n}", date="2026-06-20", text="RYANAIR")
+
+    pages = []
+    real_find = db.Transaction.find
+
+    def counting_find(*args, **kwargs):
+        pages.append(args)
+        return real_find(*args, **kwargs)
+
+    monkeypatch.setattr(db.Transaction, "find", counting_find)
+
+    assert len(run(TripService.search(str(trip.id), "ryanair"))) == 25
+    assert len(pages) == 1

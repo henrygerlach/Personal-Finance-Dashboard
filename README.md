@@ -1,4 +1,4 @@
-# Personal-Finance-Dashboard
+# Personal Finance Dashboard
 
 A self-hosted FastAPI application that turns a Comdirect CSV export into a
 categorised ledger and reads the schedules, trips and month-over-month changes
@@ -92,7 +92,7 @@ graph LR
     Cache --> DB[(MongoDB / Beanie)]
     API --> DB
     DB --> Det[recurrence · patterns<br/>trips · merchants · places]
-    Det --> Routes[routes.py + services.py] --> UI[Jinja + Chart.js]
+    Det --> Routes[routes.py + services/] --> UI[Jinja + Chart.js]
 ```
 
 A CSV upload is parsed and deduplicated, then each booking line is reduced to a
@@ -101,7 +101,7 @@ payees second, files unrecoverable PayPal lines deterministically third, and onl
 then calls the API, once per unknown merchant rather than once per transaction. Results
 are written to MongoDB. The detection modules (`patterns`, `trips`, `recurrence`,
 `merchants`, `places`) are pure functions over transactions with no database
-access of their own; `services.py` reads for them and `routes.py` renders.
+access of their own; `app/services/` reads for them and `routes.py` renders.
 
 ## Getting started
 
@@ -170,8 +170,8 @@ accepts the same files.
 ./scripts/install-macos-app.sh
 ```
 
-`cmd+space` → **Personal-Finance-Dashboard** starts MongoDB and the server and opens the
-browser once the page answers; **Stop Personal-Finance-Dashboard** shuts both down. The
+`cmd+space` → **Personal Finance Dashboard** starts MongoDB and the server and opens the
+browser once the page answers; **Stop Personal Finance Dashboard** shuts both down. The
 bundles hold only a small compiled stub, because macOS grants Documents-folder
 access by the signature of the running process and a shell script would run as
 `/bin/bash`. The logic lives in `scripts/launcher.sh` and `scripts/stopper.sh`, so

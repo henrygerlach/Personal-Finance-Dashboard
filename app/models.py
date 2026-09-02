@@ -5,9 +5,31 @@ Data models for the application using Beanie ODM.
 from datetime import datetime
 from typing import Optional
 
-from beanie import Document, Indexed
+from beanie import Document, Indexed, PydanticObjectId
+from bson.errors import InvalidId
 from pydantic import Field
-from pymongo import ASCENDING, IndexModel
+from pymongo import ASCENDING, DESCENDING, IndexModel
+
+
+def object_id(value: str) -> PydanticObjectId:
+    """
+    One id out of a URL or a form field.
+
+    ``PydanticObjectId`` raises ``InvalidId``, which descends from
+    ``BSONError`` and not from ``ValueError``, so the ``except ValueError``
+    a route wraps its lookup in does not catch it and a mistyped id leaves as
+    a 500 instead of the 404 or 422 the route meant. Ids reach the app from
+    paths and form posts, where anything at all can arrive, so the conversion
+    is funnelled through here and reported the way every other bad value is.
+
+    Raises:
+        ValueError: The value is not an object id.
+    """
+    try:
+        return PydanticObjectId(value)
+    except InvalidId:
+        raise ValueError(f"{value!r} is not an id")
+
 
 # Where a transaction's category came from. Recorded per transaction so a
 # result can always be traced back and, if needed, recomputed.
@@ -134,6 +156,15 @@ class Transaction(Document):
 
     class Settings:
         name = "transactions"
+        indexes = [
+            # The badge counts on every page render are a query on this field,
+            # and both are answered by counting index entries rather than by
+            # reading the collection.
+            IndexModel([("minor_category", ASCENDING)], name="minor_category"),
+            # Descending because every query that orders by date wants the
+            # recent end first, and a single-field index is read either way.
+            IndexModel([("date", DESCENDING)], name="date"),
+        ]
 
 
 class CategoryRule(Document):

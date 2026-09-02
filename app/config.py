@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     #: Attempts per batch before it is given up on. A failed batch must not
     #: take the rest of the import down with it.
     classification_max_attempts: int = 3
+    #: How many batches are in flight at once. An import of a few hundred
+    #: transactions is a dozen requests, and run one after another the wait is
+    #: the sum of them. The first batch still goes on its own: it is the one
+    #: that writes the prompt cache, and batches fired alongside it would each
+    #: pay to write the same block instead of reading it.
+    classification_concurrency: int = 4
     #: Where PayPal debits go when Comdirect truncated the merchant away.
     #: There is no merchant in those lines for any classifier to read, so they
     #: are filed deterministically rather than sent to the API. The category

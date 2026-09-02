@@ -15,9 +15,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from app import services as services_module
 from app.patterns import KIND_DRIFT, Analysis, Pattern
-from app.services import PatternService
+from app.services import PatternService, RecurringService
+from tests.fixtures.odm import patch_services
 
 
 def item(**extra):
@@ -73,7 +73,7 @@ def test_a_schedule_the_user_dismissed_is_not_handed_to_the_detector(monkeypatch
         handed["schedules"] = list(schedules)
         return Analysis((), (), (), (), (), (), (), 0.0, "")
 
-    monkeypatch.setattr(services_module, "analyse", fake_analyse)
+    patch_services(monkeypatch, analyse=fake_analyse)
     _patch_reads(
         monkeypatch,
         recurring={
@@ -102,19 +102,17 @@ def _patch_reads(monkeypatch, transactions=(), recurring=None, dismissals=()):
     async def no_trips():
         return {}
 
-    monkeypatch.setattr(
-        services_module,
-        "Transaction",
-        SimpleNamespace(find_all=lambda: SimpleNamespace(to_list=find_all)),
+    patch_services(
+        monkeypatch,
+        Transaction=SimpleNamespace(find_all=lambda: SimpleNamespace(to_list=find_all)),
     )
-    monkeypatch.setattr(
-        services_module,
-        "PatternDismissal",
-        SimpleNamespace(
+    patch_services(
+        monkeypatch,
+        PatternDismissal=SimpleNamespace(
             find_all=lambda: SimpleNamespace(to_list=lambda: _resolve(dismissals))
         ),
     )
-    monkeypatch.setattr(services_module.RecurringService, "overview", overview)
+    monkeypatch.setattr(RecurringService, "overview", overview)
     monkeypatch.setattr(PatternService, "_trip_names", no_trips)
 
 
@@ -199,7 +197,7 @@ def test_a_finding_that_was_put_away_is_kept_out_of_the_live_list(monkeypatch):
             reference="2026-07",
         )
 
-    monkeypatch.setattr(services_module, "analyse", fake_analyse)
+    patch_services(monkeypatch, analyse=fake_analyse)
     _patch_reads(
         monkeypatch,
         dismissals=[

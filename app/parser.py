@@ -6,6 +6,7 @@ import csv
 import hashlib
 import io
 import re
+from collections import Counter
 from typing import Optional, Sequence
 
 import pandas as pd
@@ -37,23 +38,46 @@ class Parser:
         self.categorizer = Categorizer(rules)
 
     @staticmethod
-    def _generate_hash(row: dict) -> str:
+    def _row_key(row: dict) -> str:
+        """The four facts a transaction is identified by, as one string."""
+        return f"{row['date']}{row['amount']}{row['booking_text']}{row['process']}"
+
+    @staticmethod
+    def _generate_hash(row: dict, occurrence: int = 0) -> str:
         """
         Generate a unique hash for a transaction.
 
         Uses MD5 hash of date, amount, booking text, and process code
         to uniquely identify a transaction.
 
+        Those four facts do not separate two genuine charges that happen to
+        agree on all of them — the same fare twice in a day, two identical
+        tickets — and the hash is a unique index the importer skips on, so the
+        second one would be dropped as a re-import of the first. ``occurrence``
+        is how many rows carrying these same four facts came earlier in the
+        file, which separates them without asking the bank for anything it
+        does not print.
+
         Args:
             row: Transaction data as dict
+            occurrence: How many identical rows preceded this one in the file
 
         Returns:
             MD5 hash string (hex format)
         """
-        combined = f"{row['date']}{row['amount']}{row['booking_text']}{row['process']}"
+        combined = Parser._row_key(row)
+        #: The first of a set keeps the original four-fact hash, so every hash
+        #: already stored stays valid and a re-import still deduplicates
+        #: against it rather than inserting the whole history a second time.
+        if occurrence:
+            combined = f"{combined}#{occurrence}"
         return hashlib.md5(combined.encode()).hexdigest()
 
-    def _preprocess(self, raw_transactions: pd.DataFrame) -> list[Transaction]:
+    def _preprocess(
+        self,
+        raw_transactions: pd.DataFrame,
+        seen: Counter | None = None,
+    ) -> list[Transaction]:
         """
         Preprocess raw CSV data and convert to Transaction objects.
 
@@ -65,10 +89,15 @@ class Parser:
 
         Args:
             raw_transactions: DataFrame with raw CSV data
+            seen: How often each set of four facts has already been read. It
+                is owned by ``parse`` so that identical rows count together
+                across a statement's account sections, not only within one.
 
         Returns:
             List of Transaction objects
         """
+        if seen is None:
+            seen = Counter()
         # Rename columns to standard names
         for column, col_info in COLUMN_ALIASES.items():
             for alias in col_info["aliases"]:
@@ -102,8 +131,11 @@ class Parser:
         # Convert rows to Transaction objects
         transactions = []
         for _, row in raw_transactions.iterrows():
+            key = self._row_key(row)
+            occurrence = seen[key]
+            seen[key] += 1
             transaction = Transaction(
-                hash=self._generate_hash(row),
+                hash=self._generate_hash(row, occurrence),
                 date=row["date"],
                 amount=row["amount"],
                 booking_text=row["booking_text"],
@@ -145,6 +177,9 @@ class Parser:
             Various exceptions if CSV format is invalid
         """
         transactions = []
+        #: Shared by every account section in the file, so a charge repeated
+        #: in two sections is still separated rather than deduplicated away.
+        seen: Counter = Counter()
 
         # Open file handle for reading
         if isinstance(source, (bytes, bytearray)):
@@ -194,7 +229,8 @@ class Parser:
                             self._preprocess(
                                 raw_transactions=pd.DataFrame(
                                     row_buffer, columns=cur_columns
-                                )
+                                ),
+                                seen=seen,
                             )
                         )
                         row_buffer = []
@@ -215,7 +251,8 @@ class Parser:
             if row_buffer and cur_columns is not None:
                 transactions.extend(
                     self._preprocess(
-                        raw_transactions=pd.DataFrame(row_buffer, columns=cur_columns)
+                        raw_transactions=pd.DataFrame(row_buffer, columns=cur_columns),
+                        seen=seen,
                     )
                 )
 

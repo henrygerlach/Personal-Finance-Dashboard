@@ -1,6 +1,6 @@
 # --- Poetry Configuration ---
 [tool.poetry]
-name = "Personal-Finance-Dashboard"
+name = "personal-finance-dashboard"
 version = "0.1.0"
 description = "Turns Comdirect CSV exports into a categorised ledger — LLM classification behind a merchant cache, recurring-payment and trip detection, 840 tests at 97% coverage"
 authors = ["Henry Gerlach <150011457+henrygerlach@users.noreply.github.com>"]

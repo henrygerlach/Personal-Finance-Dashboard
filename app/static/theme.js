@@ -264,6 +264,30 @@
     return value || fallback;
   }
 
+  /**
+   * Text as text, for the few places that build markup as a string.
+   *
+   * Bank booking lines are written by whoever sent the money, so a payment
+   * reference is somebody else's text arriving in the page. Almost everything
+   * here goes in through textContent and needs none of this; this is for the
+   * chart tooltip and the map popup, which assemble a small string of markup.
+   * The quote is escaped as well as the angle brackets, because the value may
+   * land in an attribute, where quotes are what ends it.
+   */
+  function escapeHtml(value) {
+    return String(value).replace(
+      /[&<>"']/g,
+      (char) =>
+        ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;",
+        })[char],
+    );
+  }
+
   const prefersReducedMotion = () =>
     global.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -291,6 +315,7 @@
     formatMonth,
     formatMonthLong,
     formatDay,
+    escapeHtml,
     token,
     oklchToHex,
     prefersReducedMotion,

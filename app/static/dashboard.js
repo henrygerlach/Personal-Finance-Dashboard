@@ -17,6 +17,7 @@
     formatMonth,
     formatMonthLong,
     formatDay,
+    escapeHtml,
     token,
     prefersReducedMotion,
   } = window.Theme;
@@ -93,12 +94,6 @@
 
   function hideTip() {
     if (tipNode) tipNode.classList.remove("is-visible");
-  }
-
-  function escapeHtml(value) {
-    return String(value).replace(/[&<>"]/g, (char) => {
-      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[char];
-    });
   }
 
   /** Anchor the tip above (x, y) in viewport coordinates, clamped on screen. */

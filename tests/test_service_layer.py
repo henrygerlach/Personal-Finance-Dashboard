@@ -20,7 +20,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from app import services as services_module
 from app.models import (
     OVERRIDE_ACTIVE,
     OVERRIDE_DISMISSED,
@@ -33,7 +32,7 @@ from app.services import (
     RecurringService,
     ReviewService,
 )
-from tests.fixtures.odm import document
+from tests.fixtures.odm import document, patch_services
 
 
 def run(coro):
@@ -48,8 +47,12 @@ def db(monkeypatch):
         PatternDismissal=document("PatternDismissal", "kind", "subject", "month"),
         MerchantCategory=document("MerchantCategory", "merchant_key", "direction"),
     )
-    for name in ("Transaction", "RecurringOverride", "PatternDismissal"):
-        monkeypatch.setattr(services_module, name, getattr(models, name))
+    patch_services(
+        monkeypatch,
+        Transaction=models.Transaction,
+        RecurringOverride=models.RecurringOverride,
+        PatternDismissal=models.PatternDismissal,
+    )
     monkeypatch.setattr(
         "app.classification.service.MerchantCategory", models.MerchantCategory
     )

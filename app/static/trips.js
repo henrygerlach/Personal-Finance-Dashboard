@@ -15,7 +15,7 @@
 (function () {
   "use strict";
 
-  const { categoryColor, formatCurrency, formatDay } = window.Theme;
+  const { categoryColor, formatCurrency, formatDay, escapeHtml } = window.Theme;
 
   // --- Shared rendering ------------------------------------------------------
 
@@ -316,12 +316,6 @@
     svg.setAttribute("viewBox", `0 0 ${MAP_WIDTH} ${MAP_HEIGHT}`);
     svg.innerHTML = `<g class="atlas-lands">${land}</g><g class="atlas-marks">${dots}</g>`;
     return marks;
-  }
-
-  function escapeHtml(text) {
-    const box = document.createElement("span");
-    box.textContent = text;
-    return box.innerHTML;
   }
 
   /**

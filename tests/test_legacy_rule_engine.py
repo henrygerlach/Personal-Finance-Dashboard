@@ -23,10 +23,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app import routes
-from app import services as services_module
 from app.categorizer import Categorizer
 from app.services import CategorizationService
-from tests.fixtures.odm import document
+from tests.fixtures.odm import document, patch_services
 
 OID = "68af1e2c9b4d5a6f7c8d9e01"
 
@@ -165,7 +164,7 @@ def test_a_filed_transaction_is_not_mistaken_for_the_default_state():
 @pytest.fixture
 def db(monkeypatch):
     transaction_model = document("Transaction", "minor_category")
-    monkeypatch.setattr(services_module, "Transaction", transaction_model)
+    patch_services(monkeypatch, Transaction=transaction_model)
     return transaction_model
 
 

@@ -6,7 +6,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
-from beanie import PydanticObjectId
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -18,7 +17,7 @@ from app.classification.comparison import write_comparison
 from app.classification.service import ClassificationService, apply, report_lines
 from app.config import get_logger, settings
 from app.constants import CATEGORY_HIERARCHY
-from app.models import SOURCE_PENDING, CategoryRule, Transaction
+from app.models import SOURCE_PENDING, CategoryRule, Transaction, object_id
 from app.parser import Parser
 from app.paypal import PayPalFormatError, import_export
 from app.paypal.records import looks_like_export
@@ -699,7 +698,10 @@ async def rules_page(
 @router.post("/rules/{rule_id}/delete", response_class=RedirectResponse)
 async def delete_rule(rule_id: str) -> RedirectResponse:
     """Delete a categorization rule by id and recompute transaction categories."""
-    rule = await CategoryRule.get(PydanticObjectId(rule_id))
+    try:
+        rule = await CategoryRule.get(object_id(rule_id))
+    except ValueError:
+        rule = None
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
 
@@ -825,9 +827,12 @@ async def classify_transactions(
     Consults the merchant cache first and only sends unknown merchants on, so
     a run over already-known transactions costs nothing.
 
+    Body:
+        transaction_ids: Specific transactions, as a JSON list. A bare list
+            parameter is read from the body rather than the query string.
+            Defaults to the ones still awaiting classification.
+
     Query Parameters:
-        transaction_ids: Specific transactions. Defaults to the ones still
-            awaiting classification.
         limit: How many to take when no ids are given.
         persist: Write the results back. Off by default, so a run can be
             inspected before it changes anything.
@@ -837,13 +842,17 @@ async def classify_transactions(
         The classification of each transaction and a summary of the run.
     """
     if transaction_ids:
-        transactions = [
-            transaction
-            for transaction in [
-                await Transaction.get(PydanticObjectId(tid)) for tid in transaction_ids
-            ]
-            if transaction is not None
-        ]
+        # An id that is not an id names no transaction, which is the same
+        # answer as an id naming one that is gone: it is left out, and the
+        # caller sees it missing from the results.
+        transactions = []
+        for tid in transaction_ids:
+            try:
+                transaction = await Transaction.get(object_id(tid))
+            except ValueError:
+                continue
+            if transaction is not None:
+                transactions.append(transaction)
     else:
         transactions = await (
             Transaction.find(Transaction.classification_source == SOURCE_PENDING)
@@ -957,17 +966,28 @@ async def upload_csv(files: list[UploadFile] = File(...)) -> dict:
 
             transactions = parser.parse(contents)
 
-            # Transactions are already categorized during parsing.
-            # Insert new transactions, skip duplicates.
+            # Which of this file's transactions are already stored, in one
+            # query rather than one per row. Monthly exports overlap by
+            # design, so most of a file is usually already known and asking
+            # about each row separately made the round trips, not the work,
+            # the cost of an import.
+            known = {
+                row.hash
+                for row in await Transaction.find(
+                    {"hash": {"$in": [t.hash for t in transactions]}}
+                ).to_list()
+            }
+
+            # Inserted one at a time on purpose: insert_many returns the ids
+            # in a result object instead of writing them onto the documents,
+            # and everything downstream of here keys on transaction.id.
             file_imported = 0
             file_skipped = 0
             for transaction in transactions:
-                existing = await Transaction.find_one(
-                    Transaction.hash == transaction.hash
-                )
-                if existing:
+                if transaction.hash in known:
                     file_skipped += 1
                     continue
+                known.add(transaction.hash)
                 await transaction.insert()
                 imported_new.append(transaction)
                 file_imported += 1
@@ -1087,7 +1107,10 @@ async def save_categorize_rule(
         HTTPException: If transaction not found or invalid substring
     """
     # Fetch and validate transaction
-    transaction = await Transaction.get(PydanticObjectId(transaction_id))
+    try:
+        transaction = await Transaction.get(object_id(transaction_id))
+    except ValueError:
+        transaction = None
     if not transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
 

@@ -79,6 +79,7 @@ class ClaudeClassifier:
         batch_size: int | None = None,
         max_attempts: int | None = None,
         threshold: float | None = None,
+        concurrency: int | None = None,
     ) -> None:
         if client is None:
             if not settings.anthropic_api_key:
@@ -90,6 +91,7 @@ class ClaudeClassifier:
         self.model = model or settings.classification_model
         self.batch_size = batch_size or settings.classification_batch_size
         self.max_attempts = max_attempts or settings.classification_max_attempts
+        self.concurrency = concurrency or settings.classification_concurrency
         # Built once: rebuilding per request would be wasteful, and a system
         # block that differs between requests would never cache.
         self.threshold = (
@@ -292,9 +294,29 @@ class ClaudeClassifier:
         """
         results: list[ClassificationResult] = []
         failures: list[BatchFailure] = []
+        batches = list(_batched(list(requests), self.batch_size))
 
-        for batch in _batched(list(requests), self.batch_size):
+        # The first batch goes alone, because it is the one that writes the
+        # cached system block. Batches sent alongside it would each find no
+        # cache to read and pay to write the same block again.
+        for batch in batches[:1]:
             batch_results, failure = await self._classify_batch(batch)
+            results.extend(batch_results)
+            if failure is not None:
+                failures.append(failure)
+
+        # The rest read that cache and can overlap. Gathered rather than
+        # awaited in turn: an import is a dozen requests and in sequence the
+        # wait is the sum of them.
+        limit = asyncio.Semaphore(max(1, self.concurrency))
+
+        async def run(batch):
+            async with limit:
+                return await self._classify_batch(batch)
+
+        for batch_results, failure in await asyncio.gather(
+            *(run(batch) for batch in batches[1:])
+        ):
             results.extend(batch_results)
             if failure is not None:
                 failures.append(failure)

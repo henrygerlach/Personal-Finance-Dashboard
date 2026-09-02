@@ -25,6 +25,11 @@ from app.classification.client import (
     _batched,
 )
 
+#: The real sleep, bound before the no_backoff fixture replaces the one the
+#: client module reaches. The tests that check batches overlap need a request
+#: that genuinely waits; a no-op sleep never yields to another task.
+_really_sleep = asyncio.sleep
+
 
 def request(id="1", text="AMAZON", amount=-20.71, process=None):
     return ClassificationRequest(id=id, text=text, amount=amount, process=process)
@@ -563,3 +568,85 @@ def test_the_system_block_can_be_counted_without_classifying_anything():
     subject = classifier()
 
     assert run(subject.count_prompt_tokens()) == 4321
+
+
+# --- Batches in flight together -----------------------------------------------
+
+
+def test_the_first_batch_is_answered_before_any_other_is_sent():
+    """
+    The first request is what writes the cached system block; the ones after
+    it read that block. Fired together at a cold cache they would each write
+    the same prefix instead, which costs more than sending them in turn.
+    """
+    order = []
+
+    class Watching(FakeMessages):
+        async def create(self, **kwargs):
+            order.append(("start", len(self.calls)))
+            await _really_sleep(0.01)
+            reply = await super().create(**kwargs)
+            order.append(("done", len(self.calls) - 1))
+            return reply
+
+    client = SimpleNamespace(messages=Watching([response(answer(("FOOD.GROC", 0.9)))]))
+    engine = ClaudeClassifier(
+        client=client, model="claude-haiku-4-5", batch_size=1, threshold=0.7
+    )
+
+    asyncio.run(engine.classify([request(id=str(n)) for n in range(4)]))
+
+    assert order[0] == ("start", 0)
+    assert order[1] == ("done", 0)
+
+
+def test_no_more_batches_are_in_flight_than_the_setting_allows():
+    """
+    Concurrency is what makes an import quick, and an uncapped fan-out over a
+    large first import is what makes the API rate-limit it.
+    """
+    live = []
+    peak = []
+
+    class Watching(FakeMessages):
+        async def create(self, **kwargs):
+            live.append(1)
+            peak.append(len(live))
+            await _really_sleep(0.01)
+            reply = await super().create(**kwargs)
+            live.pop()
+            return reply
+
+    client = SimpleNamespace(messages=Watching([response(answer(("FOOD.GROC", 0.9)))]))
+    engine = ClaudeClassifier(
+        client=client,
+        model="claude-haiku-4-5",
+        batch_size=1,
+        threshold=0.7,
+        concurrency=2,
+    )
+
+    asyncio.run(engine.classify([request(id=str(n)) for n in range(9)]))
+
+    assert max(peak) == 2
+
+
+def test_results_come_back_in_the_order_the_batches_were_made():
+    """
+    The batches finish in whatever order the API answers them, but the caller
+    reads the results as a list. Gathering keeps them in the order they were
+    asked, so a run is reproducible.
+    """
+    client = SimpleNamespace(
+        messages=FakeMessages([response(answer(("FOOD.GROC", 0.9)))])
+    )
+    engine = ClaudeClassifier(
+        client=client, model="claude-haiku-4-5", batch_size=1, threshold=0.7
+    )
+
+    results, failures = asyncio.run(
+        engine.classify([request(id=str(n)) for n in range(6)])
+    )
+
+    assert [result.id for result in results] == ["0", "1", "2", "3", "4", "5"]
+    assert failures == []

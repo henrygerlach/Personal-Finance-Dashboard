@@ -301,3 +301,30 @@ def test_the_static_files_are_mounted(monkeypatch):
     assert any(
         getattr(route, "path", None) == "/static" for route in main_module.app.routes
     )
+
+
+# --- Reading an id off a request ----------------------------------------------
+
+
+def test_a_good_id_is_parsed():
+    """The ordinary case: a 24-character hex string is an id."""
+    from app.models import object_id
+
+    assert str(object_id("68af1e2c9b4d5a6f7c8d9e01")) == "68af1e2c9b4d5a6f7c8d9e01"
+
+
+def test_a_bad_id_is_a_value_error_and_not_a_bson_error():
+    """
+    This is the whole reason the helper exists. Beanie's PydanticObjectId
+    raises bson's InvalidId, which descends from BSONError and not from
+    ValueError, so every route that wrapped a lookup in except ValueError let
+    a mistyped id through as a 500. The helper reports it the way the routes
+    already handle every other unusable value.
+    """
+    from bson.errors import InvalidId
+
+    from app.models import object_id
+
+    assert not issubclass(InvalidId, ValueError)
+    with pytest.raises(ValueError):
+        object_id("not-an-id")

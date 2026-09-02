@@ -43,7 +43,7 @@ log_start() {
 }
 
 notify() {
-  /usr/bin/osascript -e "display notification \"$1\" with title \"Personal-Finance-Dashboard\"" \
+  /usr/bin/osascript -e "display notification \"$1\" with title \"Personal Finance Dashboard\"" \
     >/dev/null 2>&1 || true
 }
 
@@ -57,7 +57,7 @@ step() {
 
 fail() {
   echo "ERROR: $1" >>"$LOG"
-  /usr/bin/osascript -e "display dialog \"$1\" with title \"Personal-Finance-Dashboard\" \
+  /usr/bin/osascript -e "display dialog \"$1\" with title \"Personal Finance Dashboard\" \
     buttons {\"Open log\", \"OK\"} default button \"OK\" with icon caution giving up after 300" \
     -e 'if button returned of result is "Open log" then do shell script "open -a Console '"$LOG"'"' \
     >/dev/null 2>&1 || true

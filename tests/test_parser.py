@@ -384,3 +384,61 @@ def test_the_hash_is_stable_across_runs():
 
     assert Parser._generate_hash(row) == Parser._generate_hash(dict(row))
     assert len(Parser._generate_hash(row)) == 32
+
+
+def test_the_same_charge_twice_in_one_day_is_two_transactions(parser):
+    """
+    Two identical fares, two identical tickets, the same coffee twice: the
+    four facts the hash is built from agree on all of them, and the hash is a
+    unique index the importer skips on. Giving both rows one hash files the
+    second as a re-import of the first and loses it.
+    """
+    transactions = parser.parse(export(ROW_AMAZON, ROW_AMAZON))
+
+    assert len(transactions) == 2
+    assert transactions[0].hash != transactions[1].hash
+
+
+def test_identical_charges_in_two_account_sections_stay_apart(parser):
+    """
+    The counter separating identical rows belongs to the file rather than to
+    one account block, because Comdirect writes each account as its own
+    section and the same charge can appear in two of them.
+    """
+    girokonto = export(ROW_AMAZON).decode(COMDIRECT_CSV_ENCODING)
+    visa = export(ROW_AMAZON, account="Visa-Karte").decode(COMDIRECT_CSV_ENCODING)
+
+    transactions = parser.parse(csv_bytes(girokonto + "\n" + visa))
+
+    assert len(transactions) == 2
+    assert transactions[0].hash != transactions[1].hash
+
+
+def test_a_re_import_of_a_repeated_charge_matches_the_first_import(parser):
+    """
+    Separating the second charge is only worth anything if the separation is
+    reproducible. The same file read next month must yield the same two
+    hashes, or the pair re-imports as two more transactions every time.
+    """
+    first = [t.hash for t in parser.parse(export(ROW_AMAZON, ROW_AMAZON))]
+    again = [t.hash for t in parser.parse(export(ROW_AMAZON, ROW_AMAZON))]
+
+    assert first == again
+
+
+def test_a_lone_transaction_keeps_the_hash_it_already_has():
+    """
+    Every transaction in the database was hashed from the four facts alone.
+    If the occurrence counter changed the hash of the first of a set, every
+    stored transaction would stop matching its own export and the whole
+    history would import a second time.
+    """
+    row = {
+        "date": pd.Timestamp("2024-10-25"),
+        "amount": -20.71,
+        "booking_text": "Auftraggeber: AMAZON",
+        "process": "Lastschrift / Belastung",
+    }
+
+    assert Parser._generate_hash(row, occurrence=0) == Parser._generate_hash(row)
+    assert Parser._generate_hash(row, occurrence=1) != Parser._generate_hash(row)

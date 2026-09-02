@@ -807,15 +807,10 @@ class FakeTransactionModel:
     hash = "hash"
     classification_source = "classification_source"
     found = []
-    existing = None
 
     @classmethod
     def find(cls, *args, **kwargs):
         return FakeQuery(cls.found)
-
-    @classmethod
-    async def find_one(cls, *args, **kwargs):
-        return cls.existing
 
     @classmethod
     async def get(cls, *args, **kwargs):
@@ -828,7 +823,6 @@ def transactions(monkeypatch):
 
     class Model(FakeTransactionModel):
         found = []
-        existing = None
 
     monkeypatch.setattr(routes, "Transaction", Model)
     return Model
@@ -945,7 +939,6 @@ def upload(monkeypatch):
 
     class Model(FakeTransactionModel):
         found = []
-        existing = None
 
     class FakeRule:
         @staticmethod
@@ -992,7 +985,7 @@ def test_a_transaction_already_in_the_database_is_skipped(client, upload):
     Monthly exports overlap by design; re-importing one must not double every
     transaction in the overlap.
     """
-    upload.model.existing = SimpleNamespace(hash="h1")
+    upload.model.found = [SimpleNamespace(hash="h1")]
 
     body = client.post("/upload", files=csv_file()).json()
 
@@ -1075,7 +1068,7 @@ def test_an_import_that_added_nothing_does_not_classify(client, upload):
     Classification costs money. A re-imported file that was entirely duplicate
     must not pay for it again.
     """
-    upload.model.existing = SimpleNamespace(hash="h1")
+    upload.model.found = [SimpleNamespace(hash="h1")]
     classify = recording({"classification": {}})
     upload.monkeypatch.setattr(routes, "_classify_import", classify)
 
@@ -1246,3 +1239,104 @@ def test_a_classify_run_can_name_the_transactions_it_should_cover(
     body = client.post("/api/classify", json=[OID]).json()
 
     assert body["status"] == "success"
+
+
+# --- An id that is not an id --------------------------------------------------
+#
+# Ids arrive in paths and form posts, so anything at all can be sent. Beanie's
+# PydanticObjectId raises bson's InvalidId, which is not a ValueError, so it
+# slips past the except ValueError a route wraps its lookup in and leaves as a
+# 500 — the one answer that says the server is broken rather than the request.
+
+
+def test_deleting_a_rule_by_an_id_that_is_not_an_id_is_a_404(monkeypatch, client):
+    """A mistyped id names no rule, which is what "not found" is for."""
+
+    class FakeRule:
+        @staticmethod
+        async def get(*args, **kwargs):
+            raise AssertionError("the id should never have reached the database")
+
+    monkeypatch.setattr(routes, "CategoryRule", FakeRule)
+
+    assert client.post("/rules/not-an-id/delete").status_code == 404
+
+
+def test_saving_a_rule_against_an_id_that_is_not_an_id_is_a_404(monkeypatch, client):
+    """The same for the form the categorize page posts."""
+
+    class Model(FakeTransactionModel):
+        @classmethod
+        async def get(cls, *args, **kwargs):
+            raise AssertionError("the id should never have reached the database")
+
+    monkeypatch.setattr(routes, "Transaction", Model)
+
+    reply = client.post(
+        "/categorize",
+        data={
+            "transaction_id": "not-an-id",
+            "substring": "AMAZON",
+            "major_category": "Shopping",
+            "minor_category": "General Merchandise",
+        },
+    )
+
+    assert reply.status_code == 404
+
+
+def test_classifying_an_id_that_is_not_an_id_leaves_it_out(monkeypatch, client):
+    """
+    The endpoint takes a list in the body, and one bad id in it must not fail
+    the others. An unparseable id names no transaction, which is the answer an
+    id naming a deleted one already gets: it is missing from the results.
+    """
+
+    class Model(FakeTransactionModel):
+        asked = []
+
+        @classmethod
+        async def get(cls, value, *args, **kwargs):
+            cls.asked.append(value)
+            return None
+
+    monkeypatch.setattr(routes, "Transaction", Model)
+
+    reply = client.post("/api/classify", json=["not-an-id", OID])
+
+    assert reply.status_code == 200
+    assert reply.json()["status"] == "empty"
+    assert [str(value) for value in Model.asked] == [OID]
+
+
+def test_a_statement_is_checked_for_duplicates_in_one_query(client, upload):
+    """
+    Monthly exports overlap, so most rows in a file are usually already
+    stored. Asking about each row on its own made the import cost one round
+    trip per line of the statement; the whole file is one question.
+    """
+    queries = []
+
+    class Model(FakeTransactionModel):
+        found = []
+
+        @classmethod
+        def find(cls, *args, **kwargs):
+            queries.append(args)
+            return FakeQuery(cls.found)
+
+    upload.monkeypatch.setattr(routes, "Transaction", Model)
+    upload.monkeypatch.setattr(
+        routes,
+        "Parser",
+        lambda rules: SimpleNamespace(
+            parse=lambda contents: [
+                SimpleNamespace(hash=f"h{n}", insert=lambda: _record([], "x"))
+                for n in range(20)
+            ]
+        ),
+    )
+
+    assert client.post("/upload", files=csv_file()).json()["imported"] == 20
+    assert len(queries) == 1
+    assert queries[0][0] == {"hash": {"$in": [f"h{n}" for n in range(20)]}}

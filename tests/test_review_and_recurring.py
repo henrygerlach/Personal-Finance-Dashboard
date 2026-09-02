@@ -11,9 +11,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from app import services as services_module
 from app.services import RecurringService, ReviewService
 from app.utils import should_exclude_transaction
+from tests.fixtures.odm import patch_services
 
 
 def tx(tid="1", major="Uncategorized", minor="Needs Review", **extra):
@@ -85,8 +85,11 @@ def _patch_correct(monkeypatch, transaction, remembered):
         remembered.append((name, major, minor, source, direction))
 
     transaction.save = save
-    monkeypatch.setattr(services_module, "Transaction", SimpleNamespace(get=get))
-    monkeypatch.setattr(services_module, "PydanticObjectId", lambda value: value)
+    patch_services(
+        monkeypatch,
+        Transaction=SimpleNamespace(get=get),
+        object_id=lambda value: value,
+    )
     import app.classification.service as classification_service
 
     monkeypatch.setattr(classification_service, "remember_merchant", remember)
@@ -291,15 +294,13 @@ def _overview(monkeypatch, transactions, overrides=()):
         async def to_list(self):
             return list(self.rows)
 
-    monkeypatch.setattr(
-        services_module,
-        "Transaction",
-        SimpleNamespace(find_all=lambda: Query(transactions)),
+    patch_services(
+        monkeypatch,
+        Transaction=SimpleNamespace(find_all=lambda: Query(transactions)),
     )
-    monkeypatch.setattr(
-        services_module,
-        "RecurringOverride",
-        SimpleNamespace(find_all=lambda: Query(overrides)),
+    patch_services(
+        monkeypatch,
+        RecurringOverride=SimpleNamespace(find_all=lambda: Query(overrides)),
     )
     import asyncio
 
@@ -782,15 +783,10 @@ def test_a_dismissed_schedule_does_not_flag_its_transactions(monkeypatch):
         async def to_list(self):
             return list(self.rows)
 
-    monkeypatch.setattr(
-        services_module,
-        "Transaction",
-        SimpleNamespace(find_all=lambda: Query(transactions)),
-    )
-    monkeypatch.setattr(
-        services_module,
-        "RecurringOverride",
-        SimpleNamespace(
+    patch_services(
+        monkeypatch,
+        Transaction=SimpleNamespace(find_all=lambda: Query(transactions)),
+        RecurringOverride=SimpleNamespace(
             find_all=lambda: Query([_override("BAECKEREI", "dismissed", -2.4)])
         ),
     )
@@ -813,3 +809,21 @@ def _record_save(transaction):
         transaction.saved = True
 
     return save
+
+
+def test_a_correction_against_an_id_that_is_not_an_id_is_a_value_error(monkeypatch):
+    """
+    The route turns a ValueError from here into a 422. Beanie's id parser
+    raises bson's InvalidId instead, which descends from BSONError rather than
+    ValueError, so before it was funnelled through object_id a mistyped id in
+    the form post left as a 500.
+    """
+    import asyncio
+
+    def unreachable(*args):
+        pytest.fail("the id should not have reached the database")
+
+    patch_services(monkeypatch, Transaction=SimpleNamespace(get=unreachable))
+
+    with pytest.raises(ValueError):
+        asyncio.run(ReviewService.correct("not-an-id", "Food & Drink", "Groceries"))

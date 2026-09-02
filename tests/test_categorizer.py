@@ -7,8 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from app import services
 from app.categorizer import Categorizer
+from app.services import CategorizationService
+from tests.fixtures.odm import patch_services
 
 
 @pytest.fixture
@@ -153,7 +154,7 @@ def test_recompute_all_categories_only_updates_uncategorized(monkeypatch):
         def find_all(cls):
             return DummyQuery([already_categorized, uncategorized])
 
-    monkeypatch.setattr(services, "Transaction", DummyTransaction)
+    patch_services(monkeypatch, Transaction=DummyTransaction)
 
     categorizer = Categorizer(
         [
@@ -167,7 +168,7 @@ def test_recompute_all_categories_only_updates_uncategorized(monkeypatch):
     )
 
     asyncio.run(
-        services.CategorizationService.recompute_all_categories(
+        CategorizationService.recompute_all_categories(
             categorizer,
             only_uncategorized=True,
         )

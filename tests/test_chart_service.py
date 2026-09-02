@@ -20,9 +20,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from app import services as services_module
 from app.services import ChartDataService, ComdirectBalanceService
-from tests.fixtures.odm import document
+from tests.fixtures.odm import document, patch_services
 
 
 def run(coro):
@@ -35,8 +34,11 @@ def db(monkeypatch):
         "Transaction", "date", "minor_category", "major_category"
     )
     snapshot_model = document("ComdirectBalanceSnapshot", "loaded_at")
-    monkeypatch.setattr(services_module, "Transaction", transaction_model)
-    monkeypatch.setattr(services_module, "ComdirectBalanceSnapshot", snapshot_model)
+    patch_services(
+        monkeypatch,
+        Transaction=transaction_model,
+        ComdirectBalanceSnapshot=snapshot_model,
+    )
     return SimpleNamespace(Transaction=transaction_model, Snapshot=snapshot_model)
 
 
