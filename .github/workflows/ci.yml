@@ -1,0 +1,70 @@
+# Lint and test on every push and pull request.
+#
+# The commands below are the same ones `.mise.toml` defines as `mise run lint`
+# and `mise run test`, spelled out through Poetry because mise is not installed
+# on the runner. If a task there changes, change it here too.
+#
+# Two things this deliberately does not need, both of which look like
+# omissions:
+#
+# The suite needs no MongoDB, so there is no service container. The detection
+# modules are pure functions and everything below them is stood in for, which
+# is what keeps the suite under three seconds; a database here would be a
+# service nothing connects to.
+#
+# It needs no secrets either. Nothing under tests/ reaches the Claude API — the
+# client is driven by a fake — so there is no ANTHROPIC_API_KEY, and a CI run
+# cannot cost money.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A push that lands while an earlier run of the same branch is still going
+# makes that run irrelevant, not worth finishing.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Lint and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Installed before setup-python so that its Poetry cache has something
+      # to find.
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: poetry
+
+      # pyproject names the Comdirect API dependency by its SSH remote, which
+      # is right for a developer with a key loaded and unreachable from a
+      # runner. The repository behind it is public, so rewriting the protocol
+      # is enough — no deploy key, and pyproject keeps working locally.
+      - name: Reach the git dependency over HTTPS
+        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
+
+      - name: Install dependencies
+        run: poetry install --no-interaction
+
+      - name: Lint
+        run: poetry run ruff check app tests scripts
+
+      - name: Check formatting
+        run: poetry run ruff format --check app tests scripts
+
+      - name: Test
+        run: poetry run pytest

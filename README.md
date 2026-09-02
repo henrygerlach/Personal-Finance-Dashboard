@@ -4,6 +4,8 @@ A self-hosted FastAPI application that turns a Comdirect CSV export into a
 categorised ledger and reads the schedules, trips and month-over-month changes
 hidden inside it.
 
+[![CI](https://github.com/henrygerlach/Comdirect-Dashboard-III/actions/workflows/ci.yml/badge.svg)](https://github.com/henrygerlach/Comdirect-Dashboard-III/actions/workflows/ci.yml)
+
 German bank exports are a booking line, an amount and a date. The merchant is
 buried in machine text that varies on every visit to the same shop, and payment
 processors overwrite it entirely. The previous version of this dashboard handled
@@ -269,18 +271,22 @@ with the merchant cache switched off, on a seeded sample, and reports how many
 sampled merchants also appear in the prompt's worked examples — because those have
 been handed the answer and inflate the score by exactly that much.
 
-Stated plainly, what does not exist: there is **no CI** — lint, tests and
-coverage run locally only. mypy is a dependency but is not wired into any task,
-so type hints are documentation rather than a gate. The uncovered 3% is mostly
-defensive branches and the third-party Comdirect glue.
+`.github/workflows/ci.yml` runs `ruff check`, `ruff format --check` and the
+suite on every push and pull request. It needs no service container and no
+secrets: the tests reach neither MongoDB nor the Claude API, so a run costs
+nothing and cannot be flaky for either reason.
+
+Stated plainly, what does not exist: coverage is measured but not enforced, so
+nothing fails a build for dropping it. mypy is a dependency but is not wired
+into any task, so type hints are documentation rather than a gate. The
+uncovered 3% is mostly defensive branches and the third-party Comdirect glue.
 
 ## Roadmap
 
-- Run `ruff` and `pytest` in GitHub Actions on push, and make mypy a blocking check
-  rather than an unused dependency.
+- Make mypy a blocking check in CI rather than an unused dependency.
 - Move the backfill script onto the Message Batches API, which halves every token
   price for work that has no latency requirement.
-- Add a coverage floor to the lint task so the 97% cannot quietly regress.
+- Fail the CI build below a coverage floor, so the 97% cannot quietly regress.
 - Support more than one account in the same database, which the models currently
   assume away.
 - Replace the CDN Chart.js tag with a vendored copy, so the app works offline.
