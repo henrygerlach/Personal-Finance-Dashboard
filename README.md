@@ -4,6 +4,9 @@ A self-hosted FastAPI application that turns a Comdirect CSV export into a
 categorised ledger and reads the schedules, trips and month-over-month changes
 hidden inside it.
 
+[![FastAPI](https://img.shields.io/badge/FastAPI-005571?style=flat&logo=fastapi)](https://fastapi.tiangolo.com)
+[![MongoDB](https://img.shields.io/badge/MongoDB-%234ea94b.svg?style=flat&logo=mongodb)](https://www.mongodb.com)
+[![Poetry](https://img.shields.io/badge/Poetry-%233B48CC.svg?style=flat&logo=python)](https://python-poetry.org)
 [![CI](https://github.com/henrygerlach/Personal-Finance-Dashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/henrygerlach/Personal-Finance-Dashboard/actions/workflows/ci.yml)
 
 German bank exports are a booking line, an amount and a date. The merchant is
