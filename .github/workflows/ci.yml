@@ -38,14 +38,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Installed before setup-python so that its Poetry cache has something
       # to find.
       - name: Install Poetry
         run: pipx install poetry
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: poetry
