@@ -41,3 +41,4 @@ graphify-out/
 # claude
 CLAUDE.md
 .claude/
+.serena/

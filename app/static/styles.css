@@ -22,9 +22,13 @@
   --rule-strong: #35404e;
 
   /* Text */
+  /* Three steps, and every one of them clears 4.5:1 on --ink-3, the lightest
+     surface any of them sits on. The faint step carries the mono micro-label
+     that repeats across every page at 0.68rem, so it is the smallest text
+     here and needs the most contrast, not the least. */
   --paper: #e8ecf1;
-  --paper-dim: #8d99a8;
-  --paper-faint: #616d7c;
+  --paper-dim: #9aa6b6;
+  --paper-faint: #7e8da1;
 
   /* System signals — reserved, never used for a category */
   --pos: #5bc98f;
@@ -1613,6 +1617,20 @@ input:disabled {
   animation: unfurl 0.55s cubic-bezier(0.2, 0.7, 0.3, 1) both;
 }
 
+/* Both blurs sit on a floating layer over content, which is the only place
+   they belong — but a person who has asked for less transparency has asked
+   for the layer to be a surface instead of a lens. */
+@media (prefers-reduced-transparency: reduce) {
+  .topbar {
+    background: var(--ink-0);
+    backdrop-filter: none;
+  }
+  .modal {
+    background: rgba(6, 8, 11, 0.96);
+    backdrop-filter: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -2093,7 +2111,7 @@ input:disabled {
 
 .schedule-flag {
   font-family: var(--font-mono);
-  font-size: 0.6rem;
+  font-size: 0.68rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   border: 1px solid var(--rule-strong);
@@ -2407,7 +2425,7 @@ input:disabled {
 .detail-badge {
   display: inline-block;
   font-family: var(--font-mono);
-  font-size: 0.62rem;
+  font-size: 0.68rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--paper-faint);
@@ -2661,9 +2679,12 @@ input:disabled {
   gap: var(--gap-xs);
 }
 
+/* Small is a matter of type and padding, not of hit area: these sit one per
+   row down a long list, which is exactly where a target that misses is worst. */
 .ghost-button.is-small {
   font-size: 0.78rem;
   padding: 4px 10px;
+  min-height: 28px;
 }
 
 .ghost-button.is-danger {
@@ -2683,7 +2704,7 @@ input:disabled {
 .trip-note {
   display: block;
   font-family: var(--font-mono);
-  font-size: 0.65rem;
+  font-size: 0.68rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--paper-faint);
@@ -2876,7 +2897,7 @@ input:disabled {
 
 .split-toggle .label {
   font-family: var(--font-mono);
-  font-size: 0.65rem;
+  font-size: 0.68rem;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--paper-faint);
@@ -2887,6 +2908,7 @@ input:disabled {
   font-family: var(--font-mono);
   font-size: 0.75rem;
   padding: 3px 9px;
+  min-height: 28px;
   border-radius: var(--radius-sm);
   border: 1px solid transparent;
   background: transparent;
@@ -2907,6 +2929,7 @@ input:disabled {
 
 .split-toggle .split-other {
   width: 52px;
+  min-height: 28px;
   padding: 3px 6px;
   font-family: var(--font-mono);
   font-size: 0.75rem;
@@ -3006,7 +3029,7 @@ input:disabled {
 
 .timeline-region-label {
   font-family: var(--font-mono);
-  font-size: 0.62rem;
+  font-size: 0.68rem;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--paper-faint);
@@ -3038,7 +3061,7 @@ input:disabled {
   border-left: 1px solid var(--rule);
   padding-left: 5px;
   font-family: var(--font-mono);
-  font-size: 0.6rem;
+  font-size: 0.68rem;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--paper-faint);
@@ -3090,7 +3113,7 @@ input:disabled {
   position: absolute;
   transform: translateX(-50%);
   font-family: var(--font-mono);
-  font-size: 0.6rem;
+  font-size: 0.68rem;
   letter-spacing: 0.08em;
   color: var(--paper-faint);
 }
@@ -3138,9 +3161,6 @@ input:disabled {
 @media (max-width: 640px) {
   .dial-plot {
     height: 92px;
-  }
-  .dial-day {
-    font-size: 0.55rem;
   }
 }
 
@@ -3273,7 +3293,7 @@ input:disabled {
 
 .atlas-pop-where {
   font-family: var(--font-mono);
-  font-size: 0.65rem;
+  font-size: 0.68rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--paper-faint);
@@ -3307,7 +3327,7 @@ input:disabled {
 .atlas-trip-when {
   grid-area: 2 / 1;
   font-family: var(--font-mono);
-  font-size: 0.65rem;
+  font-size: 0.68rem;
   letter-spacing: 0.04em;
   color: var(--paper-faint);
 }
@@ -3369,7 +3389,7 @@ input:disabled {
   border-left: 1px solid var(--rule);
   padding-left: 4px;
   font-family: var(--font-mono);
-  font-size: 0.6rem;
+  font-size: 0.68rem;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--paper-faint);
@@ -3455,7 +3475,7 @@ input:disabled {
     font-size: 0;
   }
   .seasons-axis .seasons-tick:nth-child(6n + 1) {
-    font-size: 0.6rem;
+    font-size: 0.68rem;
   }
 }
 
@@ -3523,7 +3543,7 @@ input:disabled {
   gap: var(--gap-md);
   margin-top: var(--gap-sm);
   font-family: var(--font-mono);
-  font-size: 0.66rem;
+  font-size: 0.68rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--paper-faint);
@@ -3612,7 +3632,7 @@ input:disabled {
   flex: 1;
   text-align: center;
   font-family: var(--font-mono);
-  font-size: 0.62rem;
+  font-size: 0.68rem;
   letter-spacing: 0.08em;
   color: var(--paper-faint);
 }
@@ -3656,7 +3676,7 @@ input:disabled {
 .finding-kind {
   flex: 1;
   font-family: var(--font-mono);
-  font-size: 0.62rem;
+  font-size: 0.68rem;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--paper-faint);
@@ -3668,7 +3688,7 @@ input:disabled {
    already true before it landed. */
 .finding-flag {
   font-family: var(--font-mono);
-  font-size: 0.6rem;
+  font-size: 0.68rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   border: 1px solid var(--rule-strong);
@@ -3683,19 +3703,22 @@ input:disabled {
   border-color: var(--pos);
 }
 
-/* The card opens the popup, so the one control on it stays out of the way
-   until the card is under the cursor. */
+/* The card opens the popup, so the one control on it stays quiet — but it
+   stays visible. Revealing it on hover alone put it out of reach of every
+   input that has no hover: touch, and anyone driving the page by keyboard
+   who cannot see what focus uncovered. */
 .finding-put-away {
-  opacity: 0;
-  width: 22px;
-  height: 22px;
+  width: 28px;
+  height: 28px;
   font-size: 1rem;
   line-height: 1;
+  color: var(--paper-faint);
 }
 
 .finding:hover .finding-put-away,
-.finding:focus-within .finding-put-away {
-  opacity: 1;
+.finding-put-away:hover,
+.finding-put-away:focus-visible {
+  color: var(--paper);
 }
 
 .finding-name {
@@ -3736,7 +3759,7 @@ input:disabled {
 
 .finding-caption {
   font-family: var(--font-mono);
-  font-size: 0.66rem;
+  font-size: 0.68rem;
   line-height: 1.5;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -3851,7 +3874,7 @@ input:disabled {
 
 .merchant-caption {
   font-family: var(--font-mono);
-  font-size: 0.66rem;
+  font-size: 0.68rem;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--paper-faint);

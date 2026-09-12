@@ -133,7 +133,11 @@
     // a picket fence.
     for (let d = 1; d <= DIAL_DAYS; d += 1) {
       const position = `${((d - 1) / (DIAL_DAYS - 1)) * 100}%`;
-      const labelled = d === 1 || d % 5 === 0 || d === DIAL_DAYS;
+      // The last day always gets a number, so a multiple of five sitting next
+      // to it is dropped: 30 and 31 are a day apart and their labels collide
+      // on any track narrow enough to be worth checking.
+      const labelled =
+        d === 1 || d === DIAL_DAYS || (d % 5 === 0 && DIAL_DAYS - d > 1);
       const tick = document.createElement("span");
       tick.className = `dial-tick${labelled ? " is-labelled" : ""}`;
       tick.style.left = position;
