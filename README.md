@@ -20,10 +20,6 @@ mise run dev-demo    # http://127.0.0.1:8000
 
 Every screenshot here is of that generated ledger — no real statement appears in this repo.
 
-![Trips](assets/trips.png)
-
-![Filing a transaction from the review queue](assets/review.gif)
-
 ## Why I built it
 
 A German bank export is just a booking line, an amount and a date. The merchant is buried in machine-generated text that changes on every visit to the same shop, and payment processors like PayPal overwrite it entirely — so "what did I spend on groceries in March" isn't a question the statement can answer on its own.
@@ -41,11 +37,15 @@ The previous version of this dashboard answered that by hand: 609 substring-matc
 - A merchant cache answers first so a given merchant is only ever classified once, and a `source="user"` entry (filed by hand) permanently outranks the model.
 - Anything the classifier declines to guess — rather than guessing badly — lands in a review queue for a human to file.
 
+![Filing a transaction from the review queue](assets/review.gif)
+
 **Detection** (all proposals, none auto-created — see Conventions below)
 - Recurring payments and their price rises over time.
 - Trips: stretches of card activity away from home, and what each one actually cost.
 - Month-over-month changes worth noticing, using robust statistics (medians, MAD) so a single expensive month doesn't skew the baseline that's meant to catch it.
 - Merchant concentration: which merchants a category total is actually made of.
+
+![Trips](assets/trips.png)
 
 **Everywhere**
 - Every number on every chart drills down into the transactions behind it, as a popup rather than a panel shoved between charts.
