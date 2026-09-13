@@ -2,7 +2,7 @@
 
 **Turns a Comdirect bank CSV export into a categorised ledger, and surfaces the recurring payments, trips and month-over-month changes hidden inside it.**
 
-> This project is AI-coded: Claude (via Claude Code) wrote essentially all of the code. Henry Gerlach's role was the idea, the CLAUDE.md conventions it had to follow, review of every change, and the taxonomy/product decisions.
+> I did not write this code — Claude Code did, all of it. I gave it the tech stack and a brief, it built a first draft, and from there we iterated: until the app had every feature I actually needed, and until it stopped looking like generated output and started looking like a real product.
 
 [![FastAPI](https://img.shields.io/badge/FastAPI-005571?style=flat&logo=fastapi)](https://fastapi.tiangolo.com)
 [![MongoDB](https://img.shields.io/badge/MongoDB-%234ea94b.svg?style=flat&logo=mongodb)](https://www.mongodb.com)
