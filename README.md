@@ -148,10 +148,6 @@ Installs app bundles so `cmd+space` → **Personal Finance Dashboard** starts Mo
 
 `mise run test` runs 857 cases in about a second, with no database — the detection modules are pure functions, and everything else is stood in for with `SimpleNamespace` and `monkeypatch`. `mise run coverage` reports 97% line coverage. GitHub Actions runs lint, format and the test suite on every push; there's no database service container in CI, so a run can't run up an API bill or need secrets.
 
-## Status
-
-Single-user, self-hosted, no authentication — meant to run on localhost only. In weekly use against my own Comdirect statements, which arrive roughly monthly. Development is occasional, not finished; the rule engine stays switched off behind a flag rather than deleted until there's no reason left to keep it.
-
 ## License
 
 MIT. See [LICENSE](LICENSE).
