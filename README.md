@@ -22,9 +22,16 @@ Every screenshot here is of that generated ledger — no real statement appears 
 
 ## Why I built it
 
-A German bank export is just a booking line, an amount and a date. The merchant is buried in machine-generated text that changes on every visit to the same shop, and payment processors like PayPal overwrite it entirely — so "what did I spend on groceries in March" isn't a question the statement can answer on its own.
+Plenty of apps will link to your bank and categorise for you. Every one I tried
+was weak at one end or the other: either the categorisation was wrong often
+enough that I stopped trusting the totals, or it was fine and there was nothing
+built on top of it worth looking at.
 
-The previous version of this dashboard answered that by hand: 609 substring-matching rules over 2,676 transactions, and every new merchant meant a 610th rule. This version deletes the rule library and hands the booking line to an LLM instead, but puts the API call last — behind a merchant cache and two deterministic recovery steps — so most transactions never reach it.
+So I built my own with Claude Code. This is the fourth or fifth iteration. The
+first was a handful of functions matching patterns I'd written by hand, printing
+an Excel sheet. Then it became a web app, and then the pattern rules gave way to
+the LLM classification funnel and the detection features that only became worth
+writing once the categories were reliable.
 
 ## Features
 
