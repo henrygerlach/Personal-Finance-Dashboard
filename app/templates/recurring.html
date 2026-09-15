@@ -37,6 +37,12 @@
     {{ "%.2f"|format(item.monthly_equivalent) }} €
   </p>
 
+  {# The same commitment in whichever unit the toggle is not showing, so the
+     yearly cost of every schedule is on the page without flipping it. #}
+  <p class="schedule-alt"
+     data-alt-monthly="{{ item.monthly_equivalent }}"
+     data-alt-annual="{{ item.annual_equivalent }}"></p>
+
   <p class="schedule-billed">
     {% if item.period != "monthly" %}
     billed <span data-money="{{ item.amount|abs }}"></span> {{ item.period }}
@@ -84,7 +90,7 @@
 </section>
 
 <div class="chart-container stagger">
-  {% if overview.count or overview.dismissed %}
+  {% if overview.count or overview.dismissed or overview.candidates %}
   <section class="section-block" aria-labelledby="committed-title">
     <div class="panel-head">
       <h2 class="panel-title" id="committed-title">Standing commitments</h2>
@@ -235,6 +241,47 @@
       {% for item in overview.transfers %}
       {{ schedule_card(item, (item.monthly_equivalent|abs / transfer_max * 100)|round(1)) }}
       {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  {# Two charges a month apart is the one case the detector cannot settle:
+     the second month of a subscription and two restaurant visits are the same
+     shape in the data. So it is asked rather than guessed, and the answer is
+     given in the same popup as every other decision on this page. #}
+  {% if overview.candidates %}
+  <section class="section-block schedule-quiet" aria-labelledby="candidates-title">
+    <div class="panel-head">
+      <h2 class="panel-title" id="candidates-title">Seen twice in a row</h2>
+      <span class="spectrum-caption">{{ overview.candidate_count }} to confirm</span>
+    </div>
+    <div class="table-scroll">
+      <table class="recurring-table">
+        <thead>
+          <tr>
+            <th>Merchant</th>
+            <th>Category</th>
+            <th class="numeric">Amount</th>
+            <th>First</th>
+            <th>Last</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in overview.candidates %}
+          <tr class="is-clickable" data-schedule="{{ item.id }}"
+              tabindex="0" role="button">
+            <td>{{ item.merchant }}</td>
+            <td>
+              <span class="cat-swatch" data-category="{{ item.minor }}"></span>
+              {{ item.major }} / {{ item.minor }}
+            </td>
+            <td class="numeric" data-money="{{ item.amount }}"></td>
+            <td>{{ item.first_seen }}</td>
+            <td>{{ item.last_seen }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
     </div>
   </section>
   {% endif %}

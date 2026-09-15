@@ -336,6 +336,24 @@ def test_a_decision_is_stored_against_the_facts_of_the_run(db):
     assert db.RecurringOverride.rows[0].amount == pytest.approx(-12.99)
 
 
+def test_confirming_a_pair_stores_a_decision_like_any_other(db):
+    """
+    The two-charge candidate is answered through the same popup and the same
+    endpoint as a detected schedule, so the run behind its id has to be
+    findable — and a pair is below the detector's own threshold.
+    """
+    series(db, merchant="FITNESSSTUDIO", amount=-29.9, count=2)
+    overview = run(RecurringService.overview())
+    assert overview["candidate_count"] == 1
+
+    stored = run(
+        RecurringService.set_override(overview["candidates"][0]["id"], OVERRIDE_ACTIVE)
+    )
+
+    assert stored["decision"] == OVERRIDE_ACTIVE
+    assert db.RecurringOverride.rows[0].amount == pytest.approx(-29.9)
+
+
 def test_deciding_twice_updates_the_one_decision(db):
     """Two rows for one schedule would take two clicks to undo."""
     series(db)

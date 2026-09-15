@@ -70,6 +70,56 @@ def test_a_small_price_rise_stays_one_run():
     assert runs[0].occurrences == 6
 
 
+def test_a_euro_on_a_cheap_subscription_stays_one_run():
+    """
+    Price rises are not proportional to price. A euro is a rounding error on
+    the rent and a fifth of a streaming plan, so at a flat fifteen percent the
+    cheap service that got a euro dearer left its own run — and with three
+    charges on each side of the rise it was then found as no schedule at all.
+    """
+    charges = monthly("SPOTIFY AB", -4.99, 3)
+    charges += [
+        charge("up-1", 90, -5.99, "SPOTIFY AB"),
+        charge("up-2", 121, -5.99, "SPOTIFY AB"),
+        charge("up-3", 151, -5.99, "SPOTIFY AB"),
+    ]
+    runs = find_recurring(charges)
+    assert len(runs) == 1, "20% of 4.99 is a price rise, not a different payment"
+    assert runs[0].occurrences == 6
+
+
+def test_the_wider_tolerance_stops_where_the_amounts_stop_being_small():
+    """
+    The widening is for small amounts only: twenty percent of a large bill is
+    a different bill, and letting it through would carry two standing orders
+    as one and report the wrong commitment.
+    """
+    charges = monthly("STADTWERKE", -100.00, 3)
+    charges += [
+        charge("up-1", 90, -120.00, "STADTWERKE"),
+        charge("up-2", 121, -120.00, "STADTWERKE"),
+        charge("up-3", 151, -120.00, "STADTWERKE"),
+    ]
+    runs = find_recurring(charges)
+    assert {round(run.median_amount) for run in runs} == {-100, -120}
+
+
+def test_a_refund_is_not_the_charge_it_reverses():
+    """
+    Sizes used to be compared without their sign, so a 133,65 purchase and the
+    133,65 refunded a month later were the same amount — and a shop that
+    refunded one order was reported as a standing commitment whose price was
+    the median of the two, zero.
+    """
+    charges = monthly("ADIDAS AG", -133.65, 4)
+    charges.append(charge("refund", 45, 133.65, "ADIDAS AG"))
+    runs = find_recurring(charges)
+    assert len(runs) == 1
+    assert runs[0].occurrences == 4
+    assert runs[0].median_amount == pytest.approx(-133.65)
+    assert "refund" not in runs[0].transaction_ids
+
+
 def test_a_doubling_is_a_different_payment():
     charges = monthly("GYM", -20.00, 3, start_id=0)
     charges += [

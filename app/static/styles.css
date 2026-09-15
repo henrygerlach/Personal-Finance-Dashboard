@@ -2145,6 +2145,17 @@ input:disabled {
   color: var(--paper-faint);
 }
 
+/* The unit the toggle is not showing. Mono and tabular like the figure it
+   sits under, so the two read as one number in two units rather than as an
+   amount and a remark. */
+.schedule-alt {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--paper-faint);
+  margin-top: 0.15rem;
+}
+
 /* The shared money formatter colours by sign, but this line already says
    "billed", so the sign is not news. */
 .schedule-billed [data-money] {

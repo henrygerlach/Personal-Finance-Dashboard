@@ -18,8 +18,16 @@
 
   // The drift the detector allows inside one schedule. A charge beyond it is
   // marked in the popup, because it is the reason a median is shown here and
-  // not a sum.
+  // not a sum. Widened below 20 EUR for the same reason the detector widens
+  // it — see app/recurrence.amount_tolerance — so a cheap service that went
+  // up by a euro is not marked as an anomaly in its own history.
   const AMOUNT_TOLERANCE = 0.15;
+  const SMALL_AMOUNT = 20;
+  const SMALL_AMOUNT_TOLERANCE = 0.3;
+
+  function toleranceFor(level) {
+    return Math.abs(level) < SMALL_AMOUNT ? SMALL_AMOUNT_TOLERANCE : AMOUNT_TOLERANCE;
+  }
 
   /**
    * Day, month and year.
@@ -45,6 +53,7 @@
     due: "the next charge is overdue",
     ended: "this has stopped",
   };
+  const UNCONFIRMED = "two charges in a row is not enough to be sure";
   const DECISION = {
     active: "still running",
     ended: "ended",
@@ -92,6 +101,15 @@
       node.classList.toggle("is-positive", amount > 0);
       node.classList.toggle("is-negative", amount < 0);
     });
+    // Each card also carries the unit it is not showing, because a monthly
+    // figure and a yearly one answer different questions and the page should
+    // not have to be flipped to ask the second one.
+    document.querySelectorAll("[data-alt-monthly][data-alt-annual]").forEach((node) => {
+      const annual = unit === "annual";
+      const amount = Number(node.dataset[annual ? "altMonthly" : "altAnnual"]);
+      if (Number.isNaN(amount)) return;
+      node.textContent = `${formatCurrency(amount)} ${annual ? "a month" : "a year"}`;
+    });
     document.querySelectorAll(".unit-toggle button").forEach((button) => {
       const active = button.dataset.unit === unit;
       button.classList.toggle("is-active", active);
@@ -121,7 +139,10 @@
     // Only what is actually still running: a cancelled subscription is
     // history, and a dismissed one is not a schedule at all.
     const live = [...items.values()].filter(
-      (item) => item.status !== "ended" && item.override !== "dismissed"
+      (item) =>
+        item.status !== "ended" &&
+        item.override !== "dismissed" &&
+        !item.unconfirmed
     );
     if (!live.length) return;
 
@@ -250,6 +271,7 @@
   function summarize(item) {
     const parts = [
       `${formatCurrency(item.amount)} ${CADENCE[item.period] || item.period}`,
+      `${formatCurrency(item.annual_equivalent)} a year`,
       `${item.occurrences} charges since ${formatFullDate(item.first_seen)}`,
     ];
     if (item.status === "ended") {
@@ -325,12 +347,11 @@
       const levels = item.price_change
         ? [item.price_change.from, item.price_change.to]
         : [item.amount];
-      const drift = Math.min(
-        ...levels.map((level) =>
-          level ? Math.abs(charge.amount - level) / Math.abs(level) : 0
-        )
+      const outlier = levels.every(
+        (level) =>
+          level && Math.abs(charge.amount - level) / Math.abs(level) > toleranceFor(level)
       );
-      if (drift > AMOUNT_TOLERANCE) amount.classList.add("is-outlier");
+      if (outlier) amount.classList.add("is-outlier");
 
       list.appendChild(row);
     });
@@ -346,7 +367,11 @@
    */
   function renderOverride(item) {
     const verdict = document.getElementById("schedule-verdict");
-    verdict.textContent = VERDICT[item.detected_status] || item.detected_status;
+    // A pair is the one case detection has no verdict for, which is why it is
+    // being asked about at all.
+    verdict.textContent = item.unconfirmed
+      ? UNCONFIRMED
+      : VERDICT[item.detected_status] || item.detected_status;
     verdict.classList.toggle("is-overruled", Boolean(item.override));
 
     document.querySelectorAll(".override-actions button").forEach((button) => {

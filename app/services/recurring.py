@@ -20,8 +20,8 @@ from app.models import (
 )
 from app.normalization import merchant_key
 from app.recurrence import (
-    AMOUNT_TOLERANCE,
     PERIOD_MONTHS,
+    amount_tolerance,
     find_recurring,
     recurring_transaction_ids,
 )
@@ -59,6 +59,17 @@ PRICE_LEVEL_TOLERANCE = 0.02
 #: How many charges must sit at a level before it counts as a level rather
 #: than one odd month. Applies to both the current price and the old one.
 MIN_CHARGES_PER_PRICE_LEVEL = 2
+
+#: How many charges a run needs before the page will show it as a schedule
+#: without being asked.
+#:
+#: The detector needs three because two is as often a coincidence as a
+#: subscription, and nothing in the dates can tell the two apart — the second
+#: charge of a new streaming plan and two visits to the same restaurant a
+#: month apart are the same shape. So a pair is not silently dropped and not
+#: silently counted either: it is detected separately and offered, which is
+#: the only place the answer exists.
+CANDIDATE_OCCURRENCES = 2
 
 
 def _add_months(moment: datetime, months: int) -> datetime:
@@ -160,18 +171,54 @@ def _matching_override(overrides: list, merchant: str, period: str, amount: floa
             continue
         if not override.amount:
             continue
-        if abs(amount - override.amount) / abs(override.amount) <= AMOUNT_TOLERANCE:
+        if abs(amount - override.amount) / abs(override.amount) <= amount_tolerance(
+            override.amount
+        ):
             return override
     return None
 
 
-def _dismissed(run, overrides: list, charges: list) -> bool:
-    """Whether this run has been dismissed by hand as not a schedule."""
+def _decision(run, overrides: list, charges: list) -> Optional[str]:
+    """What the user has said about this run, if anything."""
     if not charges:
-        return False
+        return None
     amount, _ = _current_price(charges)
     override = _matching_override(overrides, run.merchant, run.period, amount)
-    return bool(override) and override.decision == OVERRIDE_DISMISSED
+    return override.decision if override else None
+
+
+def _detect(transactions: list) -> tuple[list, list]:
+    """
+    The schedules in a history, and the pairs worth asking about.
+
+    Detection is run twice rather than once at the lower threshold, because
+    the threshold changes which period a run is read as: a candidate stops at
+    the first period that fits, so a quarterly premium that happens to have
+    two charges a month apart somewhere in its history would be found as that
+    pair and never examined as quarterly. The full pass therefore decides what
+    a run is, and the second pass may only add pairs it did not already claim.
+
+    The two charges must also be the same amount to the cent. A schedule of
+    three or more may drift, because its rhythm is evidence in its own right;
+    two charges have nothing but their size, and 23.02 followed by 21.40 at a
+    supermarket is a coincidence rather than a bill.
+
+    Returns:
+        Established runs, and monthly pairs — two charges in consecutive
+        months, which is what the detector refuses to call a schedule.
+    """
+    runs = find_recurring(transactions)
+    claimed = recurring_transaction_ids(runs)
+    amounts = {str(t.id): t.amount for t in transactions}
+    pairs = [
+        run
+        for run in find_recurring(transactions, min_occurrences=CANDIDATE_OCCURRENCES)
+        if run.period == "monthly"
+        and run.occurrences == CANDIDATE_OCCURRENCES
+        and not claimed.intersection(run.transaction_ids)
+        and len({amounts[tid] for tid in run.transaction_ids}) == 1
+    ]
+    return runs, pairs
 
 
 class RecurringService:
@@ -186,18 +233,28 @@ class RecurringService:
         two earlier ones into a schedule, and can end one that has stopped.
         """
         transactions = await Transaction.find_all().to_list()
-        runs = find_recurring(transactions)
+        runs, pairs = _detect(transactions)
         overrides = await RecurringOverride.find_all().to_list()
 
         # A dismissed run is not a schedule, so its transactions must not
         # carry the flag either: the dashboard draws a "repeats" badge from
         # it, and a badge contradicting the recurring page is worse than no
         # badge at all.
+        #
+        # A pair is the mirror of that: it carries the flag only once the user
+        # has confirmed it, because until then nobody has said it is a
+        # schedule.
         by_id = {str(t.id): t for t in transactions}
         kept = [
             run
             for run in runs
-            if not _dismissed(run, overrides, _charges_of(run, by_id))
+            if _decision(run, overrides, _charges_of(run, by_id)) != OVERRIDE_DISMISSED
+        ]
+        kept += [
+            pair
+            for pair in pairs
+            if _decision(pair, overrides, _charges_of(pair, by_id))
+            in (OVERRIDE_ACTIVE, OVERRIDE_ENDED)
         ]
         recurring = recurring_transaction_ids(kept)
 
@@ -208,10 +265,10 @@ class RecurringService:
                 await transaction.save()
 
         logger.info(
-            "Recurring detection: %s schedules (%s dismissed by hand) "
+            "Recurring detection: %s schedules (%s dismissed or unconfirmed) "
             "covering %s transactions",
             len(kept),
-            len(runs) - len(kept),
+            len(runs) + len(pairs) - len(kept),
             len(recurring),
         )
         return kept
@@ -235,9 +292,14 @@ class RecurringService:
         sometimes, so a hand-made decision overrules it: a run the user has
         dismissed is not a schedule, and one they have marked still running or
         finished takes that status whatever its dates say.
+
+        Two charges in consecutive months are the case it cannot judge at all,
+        so they come back as ``candidates`` — carried like any other item so
+        the popup and the decision are the same ones, but out of the totals,
+        the columns and the strip until the question is answered.
         """
         transactions = await Transaction.find_all().to_list()
-        runs = find_recurring(transactions)
+        runs, pairs = _detect(transactions)
         overrides = await RecurringOverride.find_all().to_list()
         by_id = {str(t.id): t for t in transactions}
 
@@ -249,7 +311,9 @@ class RecurringService:
         reference = min(max((t.date for t in transactions), default=today), today)
 
         items = []
-        for run in runs:
+        for run, is_pair in [(run, False) for run in runs] + [
+            (pair, True) for pair in pairs
+        ]:
             charges = _charges_of(run, by_id)
             if not charges:
                 continue
@@ -334,6 +398,12 @@ class RecurringService:
                     ).most_common(1)[0][0],
                     "price_change": price_change,
                     "override": override.decision if override else None,
+                    # Two charges in a row that nobody has ruled on yet. It is
+                    # carried as an item like any other so the popup, the
+                    # charge list and the decision buttons are the same ones —
+                    # but it is out of every total and every column until the
+                    # answer comes back.
+                    "unconfirmed": is_pair and override is None,
                     "detected_status": detected_status,
                     "charges": [
                         _describe_transaction(charge) for charge in reversed(charges)
@@ -349,7 +419,17 @@ class RecurringService:
         # entirely — out of both directions, the totals and the strip. It is
         # still listed, quietly, because a decision has to be reversible.
         dismissed = [item for item in items if item["override"] == OVERRIDE_DISMISSED]
-        kept = [item for item in items if item["override"] != OVERRIDE_DISMISSED]
+        # A pair is a question, not a commitment: it is neither in the totals
+        # nor in the columns until it is answered.
+        candidates = sorted(
+            (item for item in items if item["unconfirmed"]),
+            key=lambda item: -abs(item["monthly_equivalent"]),
+        )
+        kept = [
+            item
+            for item in items
+            if item["override"] != OVERRIDE_DISMISSED and not item["unconfirmed"]
+        ]
 
         live = [item for item in kept if item["status"] != "ended"]
         outgoing = sorted(
@@ -398,6 +478,7 @@ class RecurringService:
         return {
             "items": items,
             "dismissed": dismissed,
+            "candidates": candidates,
             "outgoing": outgoing,
             "incoming": incoming,
             "transfers": transfers,
@@ -418,6 +499,7 @@ class RecurringService:
             "upcoming_days": UPCOMING_DAYS,
             "transfer_count": len(transfers),
             "dismissed_count": len(dismissed),
+            "candidate_count": len(candidates),
             "override_count": sum(1 for item in items if item["override"]),
             "active_count": len(live),
             "ended_count": len(ended),
@@ -440,7 +522,8 @@ class RecurringService:
         transactions = await Transaction.find_all().to_list()
         by_id = {str(t.id): t for t in transactions}
 
-        for run in find_recurring(transactions):
+        runs, pairs = _detect(transactions)
+        for run in runs + pairs:
             if run.period != period or run.transaction_ids[0] != anchor_id:
                 continue
             charges = _charges_of(run, by_id)

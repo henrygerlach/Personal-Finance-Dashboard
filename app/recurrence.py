@@ -62,6 +62,20 @@ INTERVAL_TOLERANCE_DAYS = 5
 #: utility bills vary; a doubling is a different payment.
 AMOUNT_TOLERANCE = 0.15
 
+#: Below this, a share is the wrong ruler.
+#:
+#: Price rises are not proportional to price: a subscription going up by a
+#: euro is a rounding error on the rent and a fifth of a streaming plan. At
+#: fifteen percent, 4.99 to 5.99 is a different payment, so a service that got
+#: one euro dearer left its own run and — being two or three charges on each
+#: side of the rise — was then found as no schedule at all.
+SMALL_AMOUNT = 20.0
+
+#: What that same drift is allowed to be below ``SMALL_AMOUNT``. Wide enough
+#: for the price rises cheap services actually make, and still narrow enough
+#: that 4.99 and 9.99 are two different things.
+SMALL_AMOUNT_TOLERANCE = 0.30
+
 #: Below this many charges there is no schedule, only a coincidence.
 MIN_OCCURRENCES = 3
 
@@ -99,6 +113,21 @@ class RecurringRun:
         return len(self.transaction_ids)
 
 
+def amount_tolerance(reference: float, tolerance: float = AMOUNT_TOLERANCE) -> float:
+    """
+    The drift allowed around one amount, as a share of it.
+
+    A share alone does not work at both ends of a ledger, so the share widens
+    for small amounts. Everything that compares an amount to a schedule's own
+    amount goes through here — clustering, and matching a stored decision —
+    because a rise that keeps a subscription in one run has to keep its
+    decision attached to it as well.
+    """
+    if abs(reference) < SMALL_AMOUNT:
+        return max(tolerance, SMALL_AMOUNT_TOLERANCE)
+    return tolerance
+
+
 def _median(values: Sequence[float]) -> float:
     ordered = sorted(values)
     middle = len(ordered) // 2
@@ -116,15 +145,23 @@ def _cluster_by_amount(
     Without this, a shop that bills both a fixed monthly fee and ordinary
     purchases would have neither found: the fee's regular rhythm disappears
     into the noise of everything else.
+
+    Sizes are compared with their sign, so a refund never joins the charge it
+    reverses: 10 EUR paid and 10 EUR returned are 20 EUR apart, not identical,
+    and reading them as one schedule reported a purchase and its refund as a
+    standing commitment — at a median of zero, which then no stored decision
+    could match either.
     """
     clusters: list[list[tuple[str, datetime, float]]] = []
     for entry in sorted(entries, key=lambda item: abs(item[2])):
-        amount = abs(entry[2])
+        amount = entry[2]
         for cluster in clusters:
-            reference = abs(_median([abs(item[2]) for item in cluster]))
+            reference = _median([item[2] for item in cluster])
             if reference == 0:
                 continue
-            if abs(amount - reference) / reference <= tolerance:
+            if abs(amount - reference) / abs(reference) <= amount_tolerance(
+                reference, tolerance
+            ):
                 cluster.append(entry)
                 break
         else:

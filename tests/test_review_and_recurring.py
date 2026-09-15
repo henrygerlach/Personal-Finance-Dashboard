@@ -827,3 +827,145 @@ def test_a_correction_against_an_id_that_is_not_an_id_is_a_value_error(monkeypat
 
     with pytest.raises(ValueError):
         asyncio.run(ReviewService.correct("not-an-id", "Food & Drink", "Groceries"))
+
+
+# --- Two charges in a row ------------------------------------------------------
+#
+# The one case detection cannot settle on its own: the second month of a
+# subscription and two restaurant visits a month apart are the same shape.
+
+
+def _pair(merchant="FITNESSSTUDIO", amount=-29.9, last=NOW):
+    """Two charges in consecutive months, which is not yet a schedule."""
+    return _series(
+        "pr", merchant, amount, 2, last, "Health & Fitness", "Gym & Sports", "expense"
+    )
+
+
+def test_two_charges_in_a_row_are_asked_about_rather_than_counted(monkeypatch):
+    """
+    A pair is a question, so it may not quietly join the standing
+    commitments: putting 29,90 into "going out per month" on the strength of
+    two charges states a commitment nobody has made.
+    """
+    overview = _overview(monkeypatch, _rent() + _pair())
+
+    assert overview["candidate_count"] == 1
+    assert [item["merchant"] for item in overview["candidates"]] == ["FITNESSSTUDIO"]
+    assert overview["monthly_expense"] == -1100.0
+    assert [item["merchant"] for item in overview["outgoing"]] == ["MIETE"]
+
+
+def test_two_charges_of_different_sizes_are_not_worth_asking_about(monkeypatch):
+    """
+    A schedule of three or more may drift, because its rhythm is evidence in
+    its own right. Two charges have nothing but their size, so 29,90 followed
+    by 27,50 is a coincidence rather than a bill — and asking about every one
+    of those buries the pairs that are worth an answer.
+    """
+    pair = _pair()
+    pair[0].amount = -27.5
+    overview = _overview(monkeypatch, _rent() + pair)
+
+    assert overview["candidate_count"] == 0
+
+
+def test_a_confirmed_pair_becomes_a_commitment_like_any_other(monkeypatch):
+    """
+    Confirming is the whole point of asking: once the user says it recurs it
+    belongs in the totals, the columns and the strip, with no trace of having
+    been a candidate.
+    """
+    overview = _overview(
+        monkeypatch,
+        _rent() + _pair(),
+        overrides=[_override("FITNESSSTUDIO", "active", -29.9)],
+    )
+
+    assert overview["candidate_count"] == 0
+    assert overview["monthly_expense"] == -1129.9
+    assert "FITNESSSTUDIO" in [item["merchant"] for item in overview["outgoing"]]
+
+
+def test_a_dismissed_pair_leaves_the_page_like_a_dismissed_schedule(monkeypatch):
+    """
+    "No, those two were a coincidence" has to survive, or the page asks the
+    same question again after every upload.
+    """
+    overview = _overview(
+        monkeypatch,
+        _rent() + _pair(),
+        overrides=[_override("FITNESSSTUDIO", "dismissed", -29.9)],
+    )
+
+    assert overview["candidate_count"] == 0
+    assert [item["merchant"] for item in overview["dismissed"]] == ["FITNESSSTUDIO"]
+
+
+def test_a_pair_inside_a_longer_history_does_not_rewrite_its_period(monkeypatch):
+    """
+    A candidate stops at the first period that fits, so looking for pairs in
+    the same pass would find the two charges a month apart at the start of a
+    quarterly premium and never examine it as quarterly — halving the reported
+    interval and tripling what the page says it costs. Pairs are therefore
+    only looked for in what full detection did not already claim, which also
+    keeps a charge that already belongs to a schedule from being asked about
+    as though it were loose.
+    """
+    premium = _series(
+        "q",
+        "VERSICHERUNG",
+        -120.0,
+        3,
+        NOW,
+        "Insurance",
+        "Other Insurance",
+        "expense",
+        months=3,
+    )
+    stray = tx(
+        tid="qstray",
+        major="Insurance",
+        minor="Other Insurance",
+        flow_type="expense",
+        amount=-120.0,
+        booking_text=" VERSICHERUNG ",
+        date=_months_before(premium[0].date, 1),
+    )
+    overview = _overview(monkeypatch, _rent() + premium + [stray])
+
+    insurance = [
+        item for item in overview["items"] if item["merchant"] == "VERSICHERUNG"
+    ]
+    assert [item["period"] for item in insurance] == ["quarterly"]
+    assert overview["candidate_count"] == 0
+
+
+def test_an_unconfirmed_pair_does_not_flag_its_transactions(monkeypatch):
+    """
+    The dashboard's "repeats" badge is drawn from ``is_recurring``, and until
+    the question is answered nobody has said these two charges repeat.
+    """
+    transactions = _rent() + _pair()
+    for transaction in transactions:
+        transaction.save = _record_save(transaction)
+
+    class Query:
+        def __init__(self, rows):
+            self.rows = rows
+
+        async def to_list(self):
+            return list(self.rows)
+
+    patch_services(
+        monkeypatch,
+        Transaction=SimpleNamespace(find_all=lambda: Query(transactions)),
+        RecurringOverride=SimpleNamespace(find_all=lambda: Query([])),
+    )
+
+    import asyncio
+
+    kept = asyncio.run(RecurringService.detect_and_store())
+
+    assert [run.merchant for run in kept] == ["MIETE"]
+    assert not any(t.is_recurring for t in transactions if "FITNESS" in t.booking_text)
