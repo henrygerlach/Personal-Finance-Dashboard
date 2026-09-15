@@ -125,3 +125,29 @@ ensure_docker() {
   done
   fail "The container runtime is not ready after two minutes. Details in the log: $LOG"
 }
+
+# Counterpart of ensure_docker: the runtime — Colima here, Docker Desktop elsewhere — is
+# shared by every project with a Spotlight launcher. It is therefore only stopped once
+# the last container is gone; while anything else is still running, quitting this
+# dashboard must not take the VM down and with it every other webapp on this machine.
+stop_runtime_if_idle() {
+  docker info >/dev/null 2>&1 || return 0
+  if [ -n "$(docker ps -q 2>/dev/null)" ]; then
+    step "Leaving the container runtime running — other containers are still using it."
+    return 0
+  fi
+  if command -v colima >/dev/null 2>&1 && colima status >/dev/null 2>&1; then
+    step "Stopping the container runtime …"
+    if colima stop >>"$LOG" 2>&1; then
+      step "Container runtime stopped."
+    else
+      # Deliberately not fail(): the dashboard is already down at this point, a Colima
+      # left standing costs some memory and nothing else.
+      step "Colima could not be stopped — details in the log: $LOG"
+    fi
+  else
+    step "Quitting Docker …"
+    /usr/bin/osascript -e 'quit app "Docker"' >/dev/null 2>&1 || true
+    step "Docker quit."
+  fi
+}

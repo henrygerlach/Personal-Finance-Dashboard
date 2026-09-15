@@ -73,6 +73,9 @@ else
   step "MongoDB was not running."
 fi
 
+# --- 3. The container runtime, but only if nothing else is left inside it
+stop_runtime_if_idle
+
 if [ "$stopped_something" -eq 0 ]; then
   echo "nothing was running" >>"$LOG"
   notify "The dashboard was not running."
