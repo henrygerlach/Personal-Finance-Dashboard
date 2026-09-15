@@ -216,3 +216,57 @@ def test_a_dismissal_of_a_kind_that_does_not_exist_is_refused():
     forever doing nothing."""
     with pytest.raises(ValueError):
         asyncio.run(PatternService.dismiss("not-a-kind", "", ""))
+
+
+def test_the_findings_the_last_statement_produced_are_listed_first(monkeypatch):
+    """
+    The page is read for what has just happened, so a new finding outranks a
+    standing one however large the standing one is — but only against the
+    standing ones: within each half the euro order the detector produced has
+    to survive, or the largest finding stops being the first one seen.
+    """
+    standing = Pattern(
+        kind=KIND_DRIFT,
+        subject="Rent",
+        month="2026-07",
+        label="Rent",
+        headline=900.0,
+    )
+    fresh_large = Pattern(
+        kind=KIND_DRIFT,
+        subject="Groceries",
+        month="2026-07",
+        label="Groceries",
+        headline=120.0,
+    )
+    fresh_small = Pattern(
+        kind=KIND_DRIFT,
+        subject="Coffee",
+        month="2026-07",
+        label="Coffee",
+        headline=30.0,
+    )
+
+    def fake_analyse(transactions, schedules=(), trip_of=None, reference=None):
+        return Analysis(
+            months=("2026-07",),
+            spend=(1000.0,),
+            income=(2000.0,),
+            committed=(400.0,),
+            fixed=(400.0,),
+            seasonal=(),
+            findings=(standing, fresh_large, fresh_small),
+            floor=20.0,
+            reference="2026-07",
+        )
+
+    patch_services(monkeypatch, analyse=fake_analyse)
+    monkeypatch.setattr(
+        "app.services.patterns.emerged",
+        lambda current, previous: frozenset({fresh_large.key, fresh_small.key}),
+    )
+    _patch_reads(monkeypatch)
+
+    overview = asyncio.run(PatternService.overview())
+
+    assert [f["label"] for f in overview["findings"]] == ["Groceries", "Coffee", "Rent"]

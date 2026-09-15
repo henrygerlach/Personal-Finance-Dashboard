@@ -170,6 +170,12 @@ class PatternService:
             rendered = PatternService._render(pattern, by_id, fresh)
             (hidden if pattern.key in put_away else live).append(rendered)
 
+        # New first, then the standing ones, each half still ranked by euros a
+        # month. A finding the last statement produced is the one being read
+        # for the first time; a large standing finding would otherwise sit
+        # above it on every load until it was put away.
+        live.sort(key=lambda finding: not finding["new"])
+
         months = list(analysis.months)
         return {
             "months": months,

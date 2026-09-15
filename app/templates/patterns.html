@@ -7,9 +7,10 @@
   So it opens with structure rather than with news. The month figure and the
   year profile are true whether or not anything changed — what a month costs,
   how much of it was decided before it started, and which parts of the year
-  are reliably unlike the others. The findings come after that, ranked by
-  euros a month and by nothing else: the newest finding is not the largest,
-  and a page ordered by date buries the rent under a coffee shop.
+  are reliably unlike the others. The findings come after that: the ones the
+  newest statement produced first, then the standing ones, each half ranked by
+  euros a month and by nothing else, because a page ordered by date alone
+  buries the rent under a coffee shop.
 
   Every card is a proposal. It carries the transactions that produced it, so
   the claim can be opened and checked, and it can be put away — which is the
@@ -40,11 +41,11 @@
     <span class="cat-swatch" data-category="{{ item.category }}"></span>
     {% endif %}
     <span class="finding-kind">{{ KIND_LABELS.get(item.kind, item.kind) }}</span>
-    {# Marked, never ranked on: the page stays ordered by euros a month,
-       because the newest finding is not the largest one. A finding is new
-       when the same analysis over the ledger without its newest complete
-       month did not produce it — not merely when it concerns that month,
-       which most of them do by construction. #}
+    {# The mark that splits the list in two: new findings are shown before
+       the standing ones, and within each half the order is euros a month.
+       A finding is new when the same analysis over the ledger without its
+       newest complete month did not produce it — not merely when it concerns
+       that month, which most of them do by construction. #}
     {% if item.new %}
     <span class="finding-flag is-new">New</span>
     {% endif %}
@@ -118,7 +119,7 @@
     <div class="panel-head">
       <h2 class="panel-title" id="findings-title">Findings</h2>
       <span class="spectrum-caption">
-        ranked by euros a month · floor
+        new first · then euros a month · floor
         <span data-money="{{ overview.floor }}"></span>
       </span>
     </div>
