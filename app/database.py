@@ -12,6 +12,7 @@ from app.config import get_logger, settings
 from app.models import (
     CategoryRule,
     ComdirectBalanceSnapshot,
+    ComdirectCredentials,
     DismissedTripProposal,
     MerchantCategory,
     PatternDismissal,
@@ -47,6 +48,7 @@ class DatabaseManager:
                 CategoryRule,
                 MerchantCategory,
                 ComdirectBalanceSnapshot,
+                ComdirectCredentials,
                 PayPalRecord,
                 RecurringOverride,
                 Trip,

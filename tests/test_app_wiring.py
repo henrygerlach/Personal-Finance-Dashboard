@@ -107,6 +107,7 @@ def test_every_document_model_is_registered(wiring):
     from app.models import (
         CategoryRule,
         ComdirectBalanceSnapshot,
+        ComdirectCredentials,
         DismissedTripProposal,
         MerchantCategory,
         PatternDismissal,
@@ -126,6 +127,7 @@ def test_every_document_model_is_registered(wiring):
         CategoryRule,
         MerchantCategory,
         ComdirectBalanceSnapshot,
+        ComdirectCredentials,
         PayPalRecord,
         RecurringOverride,
         User,
@@ -245,52 +247,13 @@ def test_the_app_connects_at_startup_and_disconnects_at_shutdown(monkeypatch):
     async def disconnect():
         events.append("disconnect")
 
-    async def balances():
-        events.append("balances")
-
     monkeypatch.setattr(main_module.db_manager, "connect", connect)
     monkeypatch.setattr(main_module.db_manager, "disconnect", disconnect)
-    monkeypatch.setattr(
-        main_module.ComdirectBalanceService, "initialize_startup_session", balances
-    )
 
     with TestClient(main_module.app):
-        assert events == ["connect", "balances"]
+        assert events == ["connect"]
 
-    assert events == ["connect", "balances", "disconnect"]
-
-
-def test_the_balances_are_loaded_after_the_database_is_up(monkeypatch):
-    """
-    The startup session falls back to a stored snapshot, and reading one needs
-    a connection. Loading it first makes the fallback silently unavailable.
-    """
-    from fastapi.testclient import TestClient
-
-    from app import main as main_module
-
-    order = []
-
-    async def connect():
-        order.append("connect")
-
-    async def balances():
-        order.append("balances")
-
-    monkeypatch.setattr(main_module.db_manager, "connect", connect)
-    monkeypatch.setattr(main_module.db_manager, "disconnect", lambda: _noop())
-    monkeypatch.setattr(
-        main_module.ComdirectBalanceService, "initialize_startup_session", balances
-    )
-
-    with TestClient(main_module.app):
-        pass
-
-    assert order.index("connect") < order.index("balances")
-
-
-async def _noop():
-    return None
+    assert events == ["connect", "disconnect"]
 
 
 def test_the_static_files_are_mounted(monkeypatch):

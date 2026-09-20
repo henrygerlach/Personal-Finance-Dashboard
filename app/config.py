@@ -5,7 +5,7 @@ Application configuration and settings.
 import logging
 import secrets
 
-from pydantic import AliasChoices, Field
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -78,24 +78,11 @@ class Settings(BaseSettings):
     paypal_fallback_major: str = "Shopping"
     paypal_fallback_minor: str = "General Merchandise"
 
-    # Comdirect API (optional)
-    comdirect_startup_auth_enabled: bool = False
-    comdirect_client_id: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("COMDIRECT_CLIENT_ID", "CLIENT_ID"),
-    )
-    comdirect_client_secret: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("COMDIRECT_CLIENT_SECRET", "CLIENT_SECRET"),
-    )
-    comdirect_access_number: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("COMDIRECT_ACCESS_NUMBER", "ACCESS_NUMBER"),
-    )
-    comdirect_pin: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("COMDIRECT_PIN", "PIN"),
-    )
+    #: Encrypts each user's Comdirect credentials at rest (app/crypto.py).
+    #: Saving credentials is refused while this is unset. Generate one with
+    #: `python -c "from cryptography.fernet import Fernet;
+    #: print(Fernet.generate_key().decode())"`
+    comdirect_credentials_key: str | None = None
 
 
 settings = Settings()

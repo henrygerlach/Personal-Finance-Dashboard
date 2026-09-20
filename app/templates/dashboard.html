@@ -26,20 +26,16 @@
 </div>
 
 <div class="chart-container stagger">
-  {% if render_balance_section %}
   <section class="section-block" aria-labelledby="balances-title">
     <div class="panel-head">
       <h2 class="panel-title" id="balances-title">Balances</h2>
-      <span class="balance-meta" id="balances-loaded-at">Loading…</span>
+      <span class="balance-meta" id="balances-meta"></span>
+      <button type="button" class="primary-button" id="balances-action">
+        Connect
+      </button>
     </div>
-    <div class="balance-strip" id="balances-grid">
-      <div class="balance-card">
-        <h4>Girokonto</h4>
-        <p class="balance-amount">—</p>
-      </div>
-    </div>
+    <div class="balance-strip" id="balances-grid" hidden></div>
   </section>
-  {% endif %}
 
   {# The spectrum doubles as the colour key for every chart below it, so it is
      drawn at the granularity those charts are drawn at: a key naming majors
@@ -150,9 +146,46 @@
   </div>
 </div>
 
-<script>
-  window.RENDER_BALANCES = {{ render_balance_section | tojson }};
-</script>
+{# Four inputs and nothing else: the button that opens this is already
+   labelled "Connect", so the fields need no paragraph explaining them. #}
+<div id="comdirect-modal" class="modal" role="dialog" aria-modal="true"
+     aria-labelledby="comdirect-title" hidden>
+  <div class="modal-content" role="document">
+    <div class="modal-header">
+      <h2 id="comdirect-title">Connect Comdirect</h2>
+      <button class="icon-button" id="comdirect-close" aria-label="Close">
+        &times;
+      </button>
+    </div>
+    <form id="comdirect-form">
+      <div class="form-group">
+        <label for="comdirect-client-id">Client ID</label>
+        <input id="comdirect-client-id" name="client_id" type="text"
+               autocomplete="off" required />
+      </div>
+      <div class="form-group">
+        <label for="comdirect-client-secret">Client secret</label>
+        <input id="comdirect-client-secret" name="client_secret" type="password"
+               autocomplete="off" required />
+      </div>
+      <div class="form-group">
+        <label for="comdirect-access-number">Access number</label>
+        <input id="comdirect-access-number" name="access_number" type="text"
+               autocomplete="off" required />
+      </div>
+      <div class="form-group">
+        <label for="comdirect-pin">PIN</label>
+        <input id="comdirect-pin" name="pin" type="password"
+               autocomplete="off" required />
+      </div>
+      <p class="field-note" id="comdirect-error"></p>
+      <div class="form-actions">
+        <button type="submit" class="primary-button">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
 <script src="{{ static_url('dashboard.js') }}"></script>
 {% endblock %}

@@ -15,10 +15,11 @@ credential or a refused login has to leave the dashboard rendering.
 """
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
+from cryptography.fernet import Fernet
 
 from app.services import ChartDataService, ComdirectBalanceService
 from tests.fixtures.odm import document, patch_services
@@ -36,13 +37,19 @@ def db(monkeypatch):
     transaction_model = document(
         "Transaction", "date", "minor_category", "major_category", "user_id"
     )
-    snapshot_model = document("ComdirectBalanceSnapshot", "loaded_at")
+    snapshot_model = document("ComdirectBalanceSnapshot", "user_id", "loaded_at")
+    credentials_model = document("ComdirectCredentials", "user_id")
     patch_services(
         monkeypatch,
         Transaction=transaction_model,
         ComdirectBalanceSnapshot=snapshot_model,
+        ComdirectCredentials=credentials_model,
     )
-    return SimpleNamespace(Transaction=transaction_model, Snapshot=snapshot_model)
+    return SimpleNamespace(
+        Transaction=transaction_model,
+        Snapshot=snapshot_model,
+        Credentials=credentials_model,
+    )
 
 
 def tx(
@@ -398,206 +405,147 @@ def test_a_line_with_no_merchant_at_all_is_named_rather_than_blank(db):
 
 # --- Comdirect balances -------------------------------------------------------
 
+USER_A = "a" * 24
+USER_B = "b" * 24
+
 
 @pytest.fixture(autouse=True)
-def reset_snapshot():
-    """The snapshot is class state, so it outlives a test that changes it."""
-    original = ComdirectBalanceService._snapshot
+def reset_pending():
+    """Pending sessions are class state, so they must not leak between tests."""
+    original = ComdirectBalanceService._pending
+    ComdirectBalanceService._pending = {}
     yield
-    ComdirectBalanceService._snapshot = original
+    ComdirectBalanceService._pending = original
 
 
-def test_the_balances_are_disabled_and_empty_until_configured(db, monkeypatch):
-    """
-    The integration is optional. Without it the dashboard has to render, so
-    the section is withheld rather than the page failing.
-    """
+@pytest.fixture(autouse=True)
+def credentials_key(monkeypatch):
+    """Every save needs a key; tests that don't care about it still get one."""
     from app.config import settings
 
-    monkeypatch.setattr(settings, "comdirect_startup_auth_enabled", False)
-
-    run(ComdirectBalanceService.initialize_startup_session())
-
-    assert ComdirectBalanceService._snapshot["status"] == "disabled-no-snapshot"
-    assert ComdirectBalanceService.should_render_balance_section() is False
-
-
-def test_a_stored_snapshot_is_used_when_the_login_is_switched_off(db, monkeypatch):
-    """
-    Yesterday's balances are worth more than none, as long as the page is told
-    they are stale rather than current.
-    """
-    from app.config import settings
-
-    monkeypatch.setattr(settings, "comdirect_startup_auth_enabled", False)
-    db.Snapshot.rows.append(
-        db.Snapshot(loaded_at=datetime(2026, 8, 30), balances={"Giro": 1200.0})
+    monkeypatch.setattr(
+        settings, "comdirect_credentials_key", Fernet.generate_key().decode()
     )
 
-    run(ComdirectBalanceService.initialize_startup_session())
 
-    assert ComdirectBalanceService._snapshot["status"] == "stale"
-    assert ComdirectBalanceService._snapshot["balances"] == {"Giro": 1200.0}
-    assert ComdirectBalanceService.should_render_balance_section() is True
+def test_status_without_credentials_is_disconnected(db):
+    status = run(ComdirectBalanceService.status(USER_A))
+
+    assert status == {
+        "has_credentials": False,
+        "pending": False,
+        "loaded_at": None,
+        "balances": None,
+    }
 
 
-def test_the_newest_stored_snapshot_wins(db, monkeypatch):
-    """Balances are a point in time, and the useful point is the last one."""
-    from app.config import settings
-
-    monkeypatch.setattr(settings, "comdirect_startup_auth_enabled", False)
-    db.Snapshot.rows.append(
-        db.Snapshot(loaded_at=datetime(2026, 8, 1), balances={"Giro": 1.0})
+def test_saved_credentials_are_encrypted_and_reported_by_status(db):
+    run(
+        ComdirectBalanceService.save_credentials(
+            USER_A, "client", "secret", "12345", "0000"
+        )
     )
-    db.Snapshot.rows.append(
-        db.Snapshot(loaded_at=datetime(2026, 8, 30), balances={"Giro": 2.0})
+
+    stored = db.Credentials.rows[0]
+    assert stored.client_id != "client"
+    assert stored.pin != "0000"
+    assert run(ComdirectBalanceService.status(USER_A))["has_credentials"] is True
+
+
+def test_saving_credentials_again_replaces_rather_than_duplicates(db):
+    run(ComdirectBalanceService.save_credentials(USER_A, "a", "b", "c", "d"))
+    run(ComdirectBalanceService.save_credentials(USER_A, "a2", "b2", "c2", "d2"))
+
+    assert len(db.Credentials.rows) == 1
+
+
+def test_beginning_a_session_without_credentials_is_refused(db):
+    with pytest.raises(ValueError):
+        run(ComdirectBalanceService.begin_session(USER_A))
+
+    assert ComdirectBalanceService._pending == {}
+
+
+def test_confirming_with_nothing_pending_is_refused(db):
+    with pytest.raises(ValueError):
+        run(ComdirectBalanceService.confirm_session(USER_A))
+
+
+def test_confirming_a_stale_pending_session_is_refused(db):
+    ComdirectBalanceService._pending[USER_A] = (
+        object(),
+        datetime.utcnow() - timedelta(minutes=10),
     )
 
-    run(ComdirectBalanceService.initialize_startup_session())
-
-    assert ComdirectBalanceService._snapshot["balances"] == {"Giro": 2.0}
-
-
-def test_a_missing_credential_is_named(db, monkeypatch):
-    """
-    Four settings are needed and any of them can be absent. Saying which one
-    is the difference between a fixable message and a shrug.
-    """
-    from app.config import settings
-
-    monkeypatch.setattr(settings, "comdirect_startup_auth_enabled", True)
-    monkeypatch.setattr(settings, "comdirect_client_id", "id")
-    monkeypatch.setattr(settings, "comdirect_client_secret", None)
-    monkeypatch.setattr(settings, "comdirect_access_number", "123")
-    monkeypatch.setattr(settings, "comdirect_pin", "0000")
-
-    run(ComdirectBalanceService.initialize_startup_session())
-
-    assert ComdirectBalanceService._snapshot["status"] == "error"
-    assert "comdirect_client_secret" in ComdirectBalanceService._snapshot["error"]
+    with pytest.raises(ValueError):
+        run(ComdirectBalanceService.confirm_session(USER_A))
 
 
-def test_a_refused_login_falls_back_to_the_stored_snapshot(db, monkeypatch):
-    """
-    The bank's login can fail for reasons that have nothing to do with this
-    app, and it must not take the dashboard down with it.
-    """
-    from app.config import settings
-
-    monkeypatch.setattr(settings, "comdirect_startup_auth_enabled", True)
-    for name in (
-        "comdirect_client_id",
-        "comdirect_client_secret",
-        "comdirect_access_number",
-        "comdirect_pin",
-    ):
-        monkeypatch.setattr(settings, name, "set")
+def test_a_successful_confirm_stores_exactly_one_snapshot_for_that_user(
+    db, monkeypatch
+):
+    ComdirectBalanceService._pending[USER_A] = (object(), datetime.utcnow())
     monkeypatch.setattr(
         ComdirectBalanceService,
-        "_authenticate_and_load",
-        classmethod(lambda cls: (_ for _ in ()).throw(RuntimeError("TAN refused"))),
-    )
-    db.Snapshot.rows.append(
-        db.Snapshot(loaded_at=datetime(2026, 8, 30), balances={"Giro": 1200.0})
-    )
-
-    run(ComdirectBalanceService.initialize_startup_session())
-
-    assert ComdirectBalanceService._snapshot["status"] == "stale"
-    assert "TAN refused" in ComdirectBalanceService._snapshot["error"]
-
-
-def test_a_refused_login_with_nothing_stored_is_an_error_not_a_crash(db, monkeypatch):
-    """There is nothing to show, and the dashboard still has to come up."""
-    from app.config import settings
-
-    monkeypatch.setattr(settings, "comdirect_startup_auth_enabled", True)
-    for name in (
-        "comdirect_client_id",
-        "comdirect_client_secret",
-        "comdirect_access_number",
-        "comdirect_pin",
-    ):
-        monkeypatch.setattr(settings, name, "set")
-    monkeypatch.setattr(
-        ComdirectBalanceService,
-        "_authenticate_and_load",
-        classmethod(lambda cls: (_ for _ in ()).throw(RuntimeError("no network"))),
-    )
-
-    run(ComdirectBalanceService.initialize_startup_session())
-
-    assert ComdirectBalanceService._snapshot["status"] == "error"
-
-
-def test_a_successful_load_is_stored_for_next_time(db, monkeypatch):
-    """
-    The stored copy is what the fallback reads, so a run that never writes one
-    leaves the next start with nothing to fall back to.
-    """
-    from app.config import settings
-
-    monkeypatch.setattr(settings, "comdirect_startup_auth_enabled", True)
-    for name in (
-        "comdirect_client_id",
-        "comdirect_client_secret",
-        "comdirect_access_number",
-        "comdirect_pin",
-    ):
-        monkeypatch.setattr(settings, name, "set")
-    monkeypatch.setattr(
-        ComdirectBalanceService,
-        "_authenticate_and_load",
+        "_finish_and_load",
         classmethod(
-            lambda cls: {
-                "status": "ready",
+            lambda cls, auth: {
                 "loaded_at": datetime(2026, 9, 1).isoformat(),
-                "error": None,
-                "balances": {"Giro": 1200.0, "Depot": 5000.0},
+                "balances": {"Giro": 1200.0},
             }
         ),
     )
 
-    run(ComdirectBalanceService.initialize_startup_session())
+    snapshot = run(ComdirectBalanceService.confirm_session(USER_A))
 
-    assert ComdirectBalanceService._snapshot["status"] == "ready"
+    assert snapshot["balances"] == {"Giro": 1200.0}
     assert len(db.Snapshot.rows) == 1
-    assert db.Snapshot.rows[0].balances == {"Giro": 1200.0, "Depot": 5000.0}
+    assert db.Snapshot.rows[0].user_id == USER_A
+    assert ComdirectBalanceService._pending == {}
 
 
-def test_the_snapshot_is_what_the_endpoint_returns(db):
-    """The route reads this and nothing else; there is no per-request login."""
-    ComdirectBalanceService._snapshot = {"status": "ready", "balances": {"Giro": 1.0}}
+def test_status_never_returns_another_users_snapshot(db):
+    db.Snapshot.rows.append(
+        db.Snapshot(
+            user_id=USER_B, loaded_at=datetime(2026, 8, 30), balances={"Giro": 1.0}
+        )
+    )
 
-    assert ComdirectBalanceService.get_balances_snapshot()["balances"] == {"Giro": 1.0}
+    status = run(ComdirectBalanceService.status(USER_A))
+
+    assert status["loaded_at"] is None
+    assert status["balances"] is None
+
+
+def test_the_newest_snapshot_for_the_user_wins(db):
+    db.Snapshot.rows.append(
+        db.Snapshot(
+            user_id=USER_A, loaded_at=datetime(2026, 8, 1), balances={"Giro": 1.0}
+        )
+    )
+    db.Snapshot.rows.append(
+        db.Snapshot(
+            user_id=USER_A, loaded_at=datetime(2026, 8, 30), balances={"Giro": 2.0}
+        )
+    )
+
+    status = run(ComdirectBalanceService.status(USER_A))
+
+    assert status["balances"] == {"Giro": 2.0}
 
 
 # --- Talking to the bank ------------------------------------------------------
 
 
-def test_the_balances_are_assembled_from_accounts_cards_and_the_depot(monkeypatch):
+def test_the_balances_are_assembled_from_accounts_cards_and_the_depot():
     """
     Three different shapes from the bank's API, flattened into one dictionary
     the dashboard can draw. The depot has no balance of its own — it is the
     sum of the positions in it, which is why it is added up here rather than
     read off a field.
     """
-    import sys
-    from types import ModuleType
-
-    module = ModuleType("comdirect_api")
-
-    class Auth:
-        def __init__(self, **credentials):
-            self.credentials = credentials
-
-        def authenticate(self):
-            return True
 
     class Client:
-        def __init__(self, auth):
-            self.auth = auth
-
         def get_account_balances(self):
             return [
                 SimpleNamespace(
@@ -627,13 +575,8 @@ def test_the_balances_are_assembled_from_accounts_cards_and_the_depot(monkeypatc
                 SimpleNamespace(currentValue=SimpleNamespace(value="1000.00")),
             ]
 
-    module.ComdirectAuth = Auth
-    module.ComdirectClient = Client
-    monkeypatch.setitem(sys.modules, "comdirect_api", module)
+    snapshot = ComdirectBalanceService._assemble_balances(Client())
 
-    snapshot = ComdirectBalanceService._authenticate_and_load()
-
-    assert snapshot["status"] == "ready"
     assert snapshot["balances"] == {
         "Girokonto": 1200.0,
         "Visa": -300.0,

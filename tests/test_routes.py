@@ -136,9 +136,6 @@ def test_every_page_carries_the_badge_counts(monkeypatch, client, templates):
     monkeypatch.setattr(routes.MerchantService, "overview", returning({}))
     monkeypatch.setattr(routes.TripService, "overview", returning({}))
     monkeypatch.setattr(routes.TripService, "proposals", returning([]))
-    monkeypatch.setattr(
-        routes.ComdirectBalanceService, "should_render_balance_section", lambda: False
-    )
 
     for path in (
         "/",
@@ -774,18 +771,29 @@ def test_the_drill_down_limit_is_bounded(monkeypatch, client):
     assert client.get("/api/transaction-detail?limit=50").status_code == 200
 
 
-def test_the_balances_come_from_the_startup_snapshot(monkeypatch, client):
-    """
-    The Comdirect session is optional and authenticated at startup; the page
-    must not try to open one per request.
-    """
+def test_the_status_route_reads_the_users_own_state(monkeypatch, client):
     monkeypatch.setattr(
         routes.ComdirectBalanceService,
-        "get_balances_snapshot",
-        lambda: {"accounts": [], "status": "disabled"},
+        "status",
+        returning({"has_credentials": False, "pending": False}),
     )
 
-    assert client.get("/api/account-balances").json()["status"] == "disabled"
+    assert client.get("/api/comdirect/status").json()["has_credentials"] is False
+
+
+def test_comdirect_routes_require_a_session():
+    """
+    Balances are per user, so an unauthenticated caller must not reach any of
+    them, the same as every other /api/ route.
+    """
+    app = FastAPI()
+    app.include_router(routes.router)
+    app.add_middleware(SessionMiddleware, secret_key="test")
+    anonymous = TestClient(app)
+
+    assert anonymous.get("/api/comdirect/status").status_code == 401
+    assert anonymous.post("/api/comdirect/session").status_code == 401
+    assert anonymous.post("/api/comdirect/session/confirm").status_code == 401
 
 
 # --- Classification -----------------------------------------------------------

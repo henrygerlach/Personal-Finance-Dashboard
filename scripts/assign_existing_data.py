@@ -2,11 +2,11 @@
 """
 Assign every document that predates login to one account.
 
-Every collection except ``users`` and ``comdirect_balance_snapshots`` gained a
-required ``user_id`` when accounts were added. Documents written before that
-have no such field, so Beanie can't even parse them back out. This bypasses
-Beanie and sets the field directly with the driver, once, for whichever
-username should own the pre-existing data.
+Every collection except ``users`` gained a required ``user_id`` when accounts
+were added. Documents written before that have no such field, so Beanie can't
+even parse them back out. This bypasses Beanie and sets the field directly
+with the driver, once, for whichever username should own the pre-existing
+data.
 
 Usage:
     python scripts/assign_existing_data.py alice --dry-run   # count, write nothing
@@ -36,6 +36,7 @@ COLLECTIONS = [
     "trip_assignments",
     "dismissed_trip_proposals",
     "pattern_dismissals",
+    "comdirect_balance_snapshots",
 ]
 
 

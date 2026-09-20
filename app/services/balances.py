@@ -1,120 +1,151 @@
 """
 The Comdirect API session and the account balances it returns.
+
+Credentials are a per-user login rather than process-wide configuration, so
+the app never talks to the bank until a user asks it to, and no balance
+answers for anyone but the user who logged in for it. There is no
+process-wide cache: a snapshot is a Mongo read per page load, which is
+cheaper than being wrong about whose balances are in memory.
 """
 
-
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.config import get_logger
-from app.models import (
-    ComdirectBalanceSnapshot,
-)
+from app.crypto import decrypt, encrypt
+from app.models import ComdirectBalanceSnapshot, ComdirectCredentials
 
 logger = get_logger(__name__)
 
-logger = get_logger(__name__)
+#: How long a started session waits for its photoTAN confirmation. Roughly
+#: the bank's own challenge lifetime; past this the pending session is
+#: dropped rather than held forever on a PIN nobody is going to confirm.
+_PENDING_TIMEOUT = timedelta(minutes=5)
 
 
 class ComdirectBalanceService:
-    """Authenticate once and cache Comdirect balances in memory."""
+    """Per-user Comdirect sessions and the balance snapshots they produce."""
 
-    _snapshot: dict = {
-        "status": "not-configured",
-        "loaded_at": None,
-        "error": None,
-        "balances": None,
-    }
+    #: str(user_id) -> (ComdirectAuth, started_at). In-memory only: a
+    #: pending session that outlives the process is one the bank has
+    #: forgotten too, so nothing here needs to survive a restart.
+    _pending: dict = {}
 
     @classmethod
-    async def initialize_startup_session(cls) -> None:
-        """Authenticate once at startup and load account/card/depot balances."""
-        from app.config import settings
-
-        if not settings.comdirect_startup_auth_enabled:
-            fallback_reason = "Comdirect startup auth is disabled by configuration"
-            fallback_snapshot = await cls._load_latest_stored_snapshot(
-                fallback_reason=fallback_reason
-            )
-            if fallback_snapshot:
-                cls._snapshot = fallback_snapshot
-                logger.info(
-                    "Startup auth disabled; using latest stored Comdirect balance "
-                    "snapshot"
-                )
-            else:
-                cls._snapshot.update(
-                    {
-                        "status": "disabled-no-snapshot",
-                        "loaded_at": None,
-                        "error": (
-                            "Startup auth disabled and no stored balance snapshot "
-                            "is available"
-                        ),
-                        "balances": None,
-                    }
-                )
-                logger.info(
-                    "Comdirect startup auth disabled and no stored snapshot found"
-                )
-            return
-
-        required = {
-            "comdirect_client_id": settings.comdirect_client_id,
-            "comdirect_client_secret": settings.comdirect_client_secret,
-            "comdirect_access_number": settings.comdirect_access_number,
-            "comdirect_pin": settings.comdirect_pin,
+    async def save_credentials(
+        cls,
+        user_id,
+        client_id: str,
+        client_secret: str,
+        access_number: str,
+        pin: str,
+    ) -> None:
+        """Encrypt and upsert one user's Comdirect login."""
+        fields = {
+            "client_id": encrypt(client_id),
+            "client_secret": encrypt(client_secret),
+            "access_number": encrypt(access_number),
+            "pin": encrypt(pin),
         }
-        missing = [key for key, value in required.items() if not value]
-        if missing:
-            message = f"Missing Comdirect credentials: {', '.join(missing)}"
-            fallback_snapshot = await cls._load_latest_stored_snapshot(
-                fallback_reason=message
-            )
-            if fallback_snapshot:
-                cls._snapshot = fallback_snapshot
-            else:
-                cls._snapshot.update({"status": "error", "error": message})
-            logger.warning(message)
-            return
-
-        logger.info("Starting Comdirect startup authentication")
-        try:
-            snapshot = await asyncio.to_thread(cls._authenticate_and_load)
-            await cls._store_snapshot(snapshot)
-            cls._snapshot = snapshot
-            logger.info("Comdirect balances loaded at startup")
-        except Exception as e:
-            error_message = f"Failed to authenticate/load Comdirect balances: {e}"
-            fallback_snapshot = await cls._load_latest_stored_snapshot(
-                fallback_reason=error_message
-            )
-            if fallback_snapshot:
-                cls._snapshot = fallback_snapshot
-                logger.warning(
-                    "Using stored Comdirect balance snapshot due to authentication "
-                    "failure"
-                )
-            else:
-                cls._snapshot.update({"status": "error", "error": error_message})
-            logger.error(error_message)
+        existing = await ComdirectCredentials.find_one(
+            ComdirectCredentials.user_id == user_id
+        )
+        if existing:
+            for name, value in fields.items():
+                setattr(existing, name, value)
+            await existing.save()
+        else:
+            await ComdirectCredentials(user_id=user_id, **fields).insert()
 
     @classmethod
-    def _authenticate_and_load(cls) -> dict:
-        """Blocking Comdirect auth + data retrieval executed in thread."""
-        from comdirect_api import ComdirectAuth, ComdirectClient
+    async def status(cls, user_id) -> dict:
+        """What the balances panel needs: state, and the latest stored data."""
+        credentials = await ComdirectCredentials.find_one(
+            ComdirectCredentials.user_id == user_id
+        )
+        latest = await (
+            ComdirectBalanceSnapshot.find(ComdirectBalanceSnapshot.user_id == user_id)
+            .sort("-loaded_at")
+            .first_or_none()
+        )
+        pending_entry = cls._pending.get(str(user_id))
+        pending = bool(
+            pending_entry and datetime.utcnow() - pending_entry[1] < _PENDING_TIMEOUT
+        )
+        return {
+            "has_credentials": credentials is not None,
+            "pending": pending,
+            "loaded_at": latest.loaded_at.isoformat() if latest else None,
+            "balances": latest.balances if latest else None,
+        }
 
-        from app.config import settings
+    @classmethod
+    async def begin_session(cls, user_id) -> dict:
+        """Start a Comdirect login: this is what sends the photoTAN push."""
+        credentials = await ComdirectCredentials.find_one(
+            ComdirectCredentials.user_id == user_id
+        )
+        if credentials is None:
+            raise ValueError("No Comdirect credentials saved for this user")
+
+        from comdirect_api import ComdirectAuth
 
         auth = ComdirectAuth(
-            client_id=settings.comdirect_client_id,
-            client_secret=settings.comdirect_client_secret,
-            access_number=settings.comdirect_access_number,
-            pin=settings.comdirect_pin,
+            client_id=decrypt(credentials.client_id),
+            client_secret=decrypt(credentials.client_secret),
+            access_number=decrypt(credentials.access_number),
+            pin=decrypt(credentials.pin),
         )
-        auth.authenticate()
-        client = ComdirectClient(auth)
 
+        def start() -> None:
+            auth.get_twofa_access_token()
+            auth.create_session()
+            auth.request_tan_challenge()
+
+        try:
+            await asyncio.to_thread(start)
+        except Exception as error:
+            cls._pending.pop(str(user_id), None)
+            raise ValueError(f"Could not start the Comdirect session: {error}")
+
+        cls._pending[str(user_id)] = (auth, datetime.utcnow())
+        return {"pending": True}
+
+    @classmethod
+    async def confirm_session(cls, user_id) -> dict:
+        """Finish a login after the photoTAN was confirmed in the bank's app."""
+        entry = cls._pending.pop(str(user_id), None)
+        if entry is None:
+            raise ValueError("No pending Comdirect session for this user")
+        auth, started_at = entry
+        if datetime.utcnow() - started_at > _PENDING_TIMEOUT:
+            raise ValueError("The photoTAN challenge has expired; start again")
+
+        try:
+            snapshot = await asyncio.to_thread(cls._finish_and_load, auth)
+        except Exception as error:
+            raise ValueError(f"Could not confirm the Comdirect session: {error}")
+
+        await cls._store_snapshot(user_id, snapshot)
+        return snapshot
+
+    @classmethod
+    def _finish_and_load(cls, auth) -> dict:
+        """Blocking: confirm the TAN, get a token, and read every balance."""
+        from comdirect_api import ComdirectClient
+
+        auth.confirm_tan_challenge()
+        auth.get_access_token()
+        return cls._assemble_balances(ComdirectClient(auth))
+
+    @classmethod
+    def _assemble_balances(cls, client) -> dict:
+        """
+        Account, card and depot balances, flattened into one dict.
+
+        The depot has no balance of its own — it is the sum of the positions
+        in it, which is why it is added up here rather than read off a field.
+        """
         accounts = client.get_account_balances()
         cards = client.get_card_balances()
         depots = client.get_depot_ids()
@@ -135,54 +166,17 @@ class ComdirectBalanceService:
         balances["Depot"] = depot_balance
 
         return {
-            "status": "ready",
             "loaded_at": datetime.utcnow().isoformat(),
-            "error": None,
             "balances": balances,
         }
 
     @classmethod
-    async def _store_snapshot(cls, snapshot: dict) -> None:
-        """Persist a successful snapshot in MongoDB for fallback usage."""
-        loaded_at_raw = snapshot.get("loaded_at")
-        try:
-            loaded_at = datetime.fromisoformat(loaded_at_raw)
-        except Exception:
-            loaded_at = datetime.utcnow()
-
-        balances = snapshot.get("balances") or {}
-        normalized_balances = {
-            str(key): float(value or 0) for key, value in balances.items()
+    async def _store_snapshot(cls, user_id, snapshot: dict) -> None:
+        """Persist a loaded snapshot for this user."""
+        loaded_at = datetime.fromisoformat(snapshot["loaded_at"])
+        balances = {
+            str(key): float(value or 0) for key, value in snapshot["balances"].items()
         }
-
-        document = ComdirectBalanceSnapshot(
-            loaded_at=loaded_at,
-            balances=normalized_balances,
-        )
-        await document.insert()
-
-    @classmethod
-    async def _load_latest_stored_snapshot(cls, fallback_reason: str) -> dict | None:
-        """Load latest persisted snapshot and mark it as stale fallback."""
-        latest = await (
-            ComdirectBalanceSnapshot.find_all().sort("-loaded_at").first_or_none()
-        )
-        if not latest:
-            return None
-
-        return {
-            "status": "stale",
-            "loaded_at": latest.loaded_at.isoformat(),
-            "error": fallback_reason,
-            "balances": latest.balances,
-        }
-
-    @classmethod
-    def get_balances_snapshot(cls) -> dict:
-        """Return current Comdirect balance snapshot."""
-        return cls._snapshot
-
-    @classmethod
-    def should_render_balance_section(cls) -> bool:
-        """Whether the dashboard should render the account balances section."""
-        return cls._snapshot.get("status") != "disabled-no-snapshot"
+        await ComdirectBalanceSnapshot(
+            user_id=user_id, loaded_at=loaded_at, balances=balances
+        ).insert()

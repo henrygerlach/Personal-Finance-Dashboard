@@ -22,8 +22,6 @@
     prefersReducedMotion,
   } = window.Theme;
 
-  const shouldLoadBalances = window.RENDER_BALANCES === true;
-
   const charts = {
     monthly: null,
     cashflow: null,
@@ -280,18 +278,6 @@
     });
   }
 
-  function showBalanceNotice(container, message) {
-    container.innerHTML = "";
-    container.classList.remove("balance-strip");
-    const notice = document.createElement("div");
-    notice.className = "panel-outline";
-    notice.innerHTML =
-      '<p class="panel-title">Balances unavailable</p>' +
-      '<p class="panel-text"></p>';
-    notice.querySelector(".panel-text").textContent = message;
-    container.appendChild(notice);
-  }
-
   function formatLoadedAt(value) {
     if (!value) return "Not loaded";
     const stamp = String(value).endsWith("Z") ? value : `${value}Z`;
@@ -304,41 +290,115 @@
     })}`;
   }
 
-  async function loadBalances() {
+  function setBalancesAction(label, handler) {
+    const button = el("balances-action");
+    button.textContent = label;
+    button.onclick = handler;
+  }
+
+  function renderBalancesFromStatus(status) {
     const grid = el("balances-grid");
-    const meta = el("balances-loaded-at");
-    if (!grid) return;
-
-    try {
-      const response = await fetch("/api/account-balances");
-      const snapshot = await response.json();
-
-      if (!["ready", "stale"].includes(snapshot.status)) {
-        meta.textContent = "";
-        showBalanceNotice(
-          grid,
-          snapshot.error || "Enable startup auth to load live balances."
-        );
-        return;
-      }
-
-      meta.textContent =
-        formatLoadedAt(snapshot.loaded_at) +
-        (snapshot.status === "stale" ? " · stored fallback" : "");
-
-      const balances = snapshot.balances || {};
-      if (!Object.keys(balances).length) {
-        showBalanceNotice(
-          grid,
-          "The Comdirect session is ready but returned no balances."
-        );
-        return;
-      }
+    const balances = status.balances || {};
+    if (Object.keys(balances).length) {
+      grid.hidden = false;
       renderBalances(orderBalances(balances), grid);
-    } catch (error) {
-      meta.textContent = "";
-      showBalanceNotice(grid, "Could not reach the backend for balances.");
+    } else {
+      grid.hidden = true;
+      grid.innerHTML = "";
     }
+    el("balances-meta").textContent = status.pending
+      ? "photoTAN sent · confirm in your app"
+      : formatLoadedAt(status.loaded_at);
+  }
+
+  async function refreshComdirectStatus() {
+    let status;
+    try {
+      const response = await fetch("/api/comdirect/status");
+      status = await response.json();
+    } catch (error) {
+      el("balances-meta").textContent = "Could not reach the backend";
+      return;
+    }
+
+    renderBalancesFromStatus(status);
+    if (status.pending) {
+      setBalancesAction("Confirm photoTAN", confirmComdirectSession);
+    } else if (status.has_credentials) {
+      setBalancesAction("Refresh", startComdirectSession);
+    } else {
+      setBalancesAction("Connect", openComdirectModal);
+    }
+  }
+
+  async function postComdirect(path, body) {
+    const response = await fetch(path, { method: "POST", body });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      throw new Error(detail.detail || "That could not be done.");
+    }
+  }
+
+  async function startComdirectSession() {
+    el("balances-meta").textContent = "Starting…";
+    try {
+      await postComdirect("/api/comdirect/session");
+    } catch (error) {
+      el("balances-meta").textContent = error.message;
+      return;
+    }
+    refreshComdirectStatus();
+  }
+
+  async function confirmComdirectSession() {
+    el("balances-meta").textContent = "Confirming…";
+    try {
+      await postComdirect("/api/comdirect/session/confirm");
+    } catch (error) {
+      el("balances-meta").textContent = error.message;
+      return;
+    }
+    refreshComdirectStatus();
+  }
+
+  function openComdirectModal() {
+    const modal = el("comdirect-modal");
+    el("comdirect-error").textContent = "";
+    modal.hidden = false;
+    document.body.classList.add("modal-open");
+    requestAnimationFrame(() => modal.classList.add("show"));
+  }
+
+  function closeComdirectModal() {
+    const modal = el("comdirect-modal");
+    modal.classList.remove("show");
+    modal.hidden = true;
+    document.body.classList.remove("modal-open");
+  }
+
+  function wireComdirectModal() {
+    const modal = el("comdirect-modal");
+    if (!modal) return;
+    el("comdirect-close").addEventListener("click", closeComdirectModal);
+    modal.addEventListener("click", (event) => {
+      if (event.target === modal) closeComdirectModal();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !modal.hidden) closeComdirectModal();
+    });
+    el("comdirect-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.target;
+      try {
+        await postComdirect("/api/comdirect/credentials", new FormData(form));
+      } catch (error) {
+        el("comdirect-error").textContent = error.message;
+        return;
+      }
+      form.reset();
+      closeComdirectModal();
+      await startComdirectSession();
+    });
   }
 
   // --- Category spectrum ----------------------------------------------------
@@ -1435,7 +1495,8 @@
     themeCharts();
     wireMultiselect();
     wireDetailModal();
-    if (shouldLoadBalances) loadBalances();
+    wireComdirectModal();
+    refreshComdirectStatus();
 
     updateFilterLabel();
     const data = await refresh();

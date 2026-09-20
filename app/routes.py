@@ -218,9 +218,6 @@ async def dashboard(request: Request, user: CurrentUser) -> HTMLResponse:
             "title": "Dashboard",
             "active_path": "/",
             **await nav_counts(user.id),
-            "render_balance_section": (
-                ComdirectBalanceService.should_render_balance_section()
-            ),
         },
     )
 
@@ -931,10 +928,46 @@ async def get_transaction_detail(
     )
 
 
-@router.get("/api/account-balances")
-async def get_account_balances() -> dict:
-    """Get cached Comdirect balances loaded during app startup."""
-    return ComdirectBalanceService.get_balances_snapshot()
+@router.get("/api/comdirect/status")
+async def get_comdirect_status(user: CurrentUser) -> dict:
+    """State the balances panel renders from: credentials, pending, data."""
+    return await ComdirectBalanceService.status(user.id)
+
+
+@router.post("/api/comdirect/credentials")
+async def save_comdirect_credentials(
+    user: CurrentUser,
+    client_id: Annotated[str, Form()],
+    client_secret: Annotated[str, Form()],
+    access_number: Annotated[str, Form()],
+    pin: Annotated[str, Form()],
+) -> dict:
+    """Save one user's Comdirect login, Fernet-encrypted."""
+    try:
+        await ComdirectBalanceService.save_credentials(
+            user.id, client_id, client_secret, access_number, pin
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return {"status": "success"}
+
+
+@router.post("/api/comdirect/session")
+async def start_comdirect_session(user: CurrentUser) -> dict:
+    """Start a Comdirect login: sends the photoTAN push."""
+    try:
+        return await ComdirectBalanceService.begin_session(user.id)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@router.post("/api/comdirect/session/confirm")
+async def confirm_comdirect_session(user: CurrentUser) -> dict:
+    """Finish a Comdirect login after the photoTAN was confirmed in-app."""
+    try:
+        return await ComdirectBalanceService.confirm_session(user.id)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
 
 
 # ============================================================================

@@ -404,15 +404,16 @@ class PayPalRecord(Document):
 
 class ComdirectBalanceSnapshot(Document):
     """
-    Persisted snapshot of Comdirect balances for fallback display.
+    Persisted snapshot of one user's Comdirect balances.
 
-    Not scoped by user. The credentials that produce it (``COMDIRECT_*`` in
-    Settings) are process-wide configuration, not a per-account login, so at
-    most one Comdirect identity's balances can ever be loaded regardless of
-    how many people use the app — there is nothing here a user_id could
-    separate. Multi-account Comdirect access would need its own feature.
+    Credentials are now a per-user login (``ComdirectCredentials``) rather
+    than process-wide configuration, so a snapshot is scoped the same way:
+    two people's Comdirect balances must never answer for each other.
     """
 
+    user_id: Indexed(PydanticObjectId) = Field(
+        ..., description="Whose Comdirect balances these are."
+    )
     loaded_at: datetime = Field(..., description="Timestamp when balances were loaded")
     balances: dict[str, float] = Field(
         default_factory=dict,
@@ -425,6 +426,40 @@ class ComdirectBalanceSnapshot(Document):
 
     class Settings:
         name = "comdirect_balance_snapshots"
+        indexes = [
+            IndexModel(
+                [("user_id", ASCENDING), ("loaded_at", DESCENDING)],
+                name="user_loaded_at",
+            )
+        ]
+
+
+class ComdirectCredentials(Document):
+    """
+    One user's Comdirect login, Fernet-encrypted (app/crypto.py).
+
+    Every field is ciphertext and is only ever decrypted in memory to start a
+    session; it never leaves the server and never reaches a template or a
+    response body.
+    """
+
+    user_id: Indexed(PydanticObjectId, unique=True) = Field(
+        ..., description="Whose Comdirect login this is."
+    )
+    client_id: str = Field(..., description="Fernet ciphertext of the client id.")
+    client_secret: str = Field(
+        ..., description="Fernet ciphertext of the client secret."
+    )
+    access_number: str = Field(
+        ..., description="Fernet ciphertext of the Comdirect access number."
+    )
+    pin: str = Field(..., description="Fernet ciphertext of the PIN.")
+    created_at: datetime = Field(
+        default_factory=datetime.utcnow, description="When this login was saved."
+    )
+
+    class Settings:
+        name = "comdirect_credentials"
 
 
 class RecurringOverride(Document):

@@ -12,7 +12,6 @@ from app.auth import AuthRequired
 from app.config import get_logger, settings
 from app.database import db_manager
 from app.routes import public_router, router
-from app.services import ComdirectBalanceService
 
 logger = get_logger(__name__)
 
@@ -27,7 +26,6 @@ async def lifespan(app: FastAPI):
     """
     logger.info("Starting application...")
     await db_manager.connect()
-    await ComdirectBalanceService.initialize_startup_session()
     yield
     logger.info("Shutting down application...")
     await db_manager.disconnect()
