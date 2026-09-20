@@ -82,11 +82,15 @@ TRIP_DECISIONS = frozenset({TRIP_INCLUDED, TRIP_EXCLUDED})
 class Transaction(Document):
     """Bank transaction record."""
 
-    hash: Indexed(str, unique=True) = Field(
+    user_id: Indexed(PydanticObjectId) = Field(
+        ..., description="Whose ledger this transaction belongs to."
+    )
+    hash: Indexed(str) = Field(
         ...,
         description=(
             "MD5 hash of date, amount, booking_text, and process. "
-            "Used for deduplication."
+            "Used for deduplication within one user's ledger — see the "
+            "user_hash index, which is what actually enforces uniqueness."
         ),
     )
     date: datetime = Field(..., description="Transaction date")
@@ -157,19 +161,33 @@ class Transaction(Document):
     class Settings:
         name = "transactions"
         indexes = [
+            # Dedup is per user: two people's banks can produce the same hash
+            # by coincidence (the same amount, date and booking text), and
+            # that must not stop the second import.
+            IndexModel(
+                [("user_id", ASCENDING), ("hash", ASCENDING)],
+                unique=True,
+                name="user_hash",
+            ),
             # The badge counts on every page render are a query on this field,
             # and both are answered by counting index entries rather than by
             # reading the collection.
-            IndexModel([("minor_category", ASCENDING)], name="minor_category"),
+            IndexModel(
+                [("user_id", ASCENDING), ("minor_category", ASCENDING)],
+                name="user_minor_category",
+            ),
             # Descending because every query that orders by date wants the
             # recent end first, and a single-field index is read either way.
-            IndexModel([("date", DESCENDING)], name="date"),
+            IndexModel(
+                [("user_id", ASCENDING), ("date", DESCENDING)], name="user_date"
+            ),
         ]
 
 
 class CategoryRule(Document):
     """Rule for automatic transaction categorization."""
 
+    user_id: Indexed(PydanticObjectId) = Field(..., description="Whose rule this is.")
     substring: str = Field(
         ..., description="Substring to match in booking text (case-insensitive)"
     )
@@ -211,8 +229,15 @@ class MerchantCategory(Document):
     keeps one entry — the lookup falls back across the direction when there is
     nothing better, and :func:`app.classification.service.entry_applies`
     decides whether that fallback can honestly answer.
+
+    The cache is per user: two people's transactions from a merchant called
+    "M" mean nothing about each other, and a correction one of them makes must
+    not silently answer for the other's.
     """
 
+    user_id: Indexed(PydanticObjectId) = Field(
+        ..., description="Whose merchant cache this entry belongs to."
+    )
     merchant_key: str = Field(
         ...,
         description=(
@@ -284,13 +309,17 @@ class MerchantCategory(Document):
     class Settings:
         name = "merchant_categories"
         indexes = [
-            # Unique on the pair, not on the merchant alone: two entries for
-            # one merchant are the point. The compound index also serves a
-            # lookup on merchant_key alone, since that is its prefix.
+            # Unique on the triple, not on the merchant alone: two entries for
+            # one merchant are the point, and two users can have entries for
+            # the same merchant key without either one seeing the other's.
             IndexModel(
-                [("merchant_key", ASCENDING), ("direction", ASCENDING)],
+                [
+                    ("user_id", ASCENDING),
+                    ("merchant_key", ASCENDING),
+                    ("direction", ASCENDING),
+                ],
                 unique=True,
-                name="merchant_key_direction",
+                name="user_merchant_key_direction",
             )
         ]
 
@@ -305,11 +334,14 @@ class PayPalRecord(Document):
     built. Keeping the two apart means improving that logic needs no
     re-import, and re-importing an overlapping export changes nothing.
 
-    ``code`` is PayPal's own transaction code and is unique, which is what
-    makes repeated imports of overlapping downloads idempotent.
+    ``code`` is PayPal's own transaction code and is unique per user, which is
+    what makes repeated imports of overlapping downloads idempotent.
     """
 
-    code: Indexed(str, unique=True) = Field(
+    user_id: Indexed(PydanticObjectId) = Field(
+        ..., description="Whose PayPal export this row came from."
+    )
+    code: Indexed(str) = Field(
         ..., description="PayPal transaction code (Transaktionscode)."
     )
     date: datetime = Field(..., description="Date PayPal recorded the movement.")
@@ -361,10 +393,25 @@ class PayPalRecord(Document):
 
     class Settings:
         name = "paypal_records"
+        indexes = [
+            IndexModel(
+                [("user_id", ASCENDING), ("code", ASCENDING)],
+                unique=True,
+                name="user_code",
+            )
+        ]
 
 
 class ComdirectBalanceSnapshot(Document):
-    """Persisted snapshot of Comdirect balances for fallback display."""
+    """
+    Persisted snapshot of Comdirect balances for fallback display.
+
+    Not scoped by user. The credentials that produce it (``COMDIRECT_*`` in
+    Settings) are process-wide configuration, not a per-account login, so at
+    most one Comdirect identity's balances can ever be loaded regardless of
+    how many people use the app — there is nothing here a user_id could
+    separate. Multi-account Comdirect access would need its own feature.
+    """
 
     loaded_at: datetime = Field(..., description="Timestamp when balances were loaded")
     balances: dict[str, float] = Field(
@@ -402,6 +449,9 @@ class RecurringOverride(Document):
     within the amount tolerance — keeps the override it already had.
     """
 
+    user_id: Indexed(PydanticObjectId) = Field(
+        ..., description="Whose schedule this decision is about."
+    )
     merchant_key: str = Field(
         ...,
         description=(
@@ -435,8 +485,12 @@ class RecurringOverride(Document):
             # tolerance rather than an equality. The service enforces one
             # override per schedule when it writes.
             IndexModel(
-                [("merchant_key", ASCENDING), ("period", ASCENDING)],
-                name="merchant_period",
+                [
+                    ("user_id", ASCENDING),
+                    ("merchant_key", ASCENDING),
+                    ("period", ASCENDING),
+                ],
+                name="user_merchant_period",
             )
         ]
 
@@ -454,6 +508,7 @@ class Trip(Document):
     records, every one of them made by hand.
     """
 
+    user_id: Indexed(PydanticObjectId) = Field(..., description="Whose trip this is.")
     name: str = Field(..., description="What the trip is called, e.g. 'Lisbon'.")
     destination: Optional[str] = Field(
         None, description="Where it went, for listing and for the reader's memory."
@@ -513,6 +568,9 @@ class TripAssignment(Document):
     service moves an assignment rather than letting a second one be written.
     """
 
+    user_id: Indexed(PydanticObjectId) = Field(
+        ..., description="Whose trip this decision is about."
+    )
     trip_id: str = Field(..., description="Id of the trip this decision is about.")
     transaction_id: str = Field(..., description="Id of the transaction decided on.")
     decision: str = Field(..., description=f"One of {sorted(TRIP_DECISIONS)}.")
@@ -535,11 +593,18 @@ class TripAssignment(Document):
             # One decision per transaction per trip. The service also enforces
             # one *inclusion* across all trips, which no index can express.
             IndexModel(
-                [("trip_id", ASCENDING), ("transaction_id", ASCENDING)],
+                [
+                    ("user_id", ASCENDING),
+                    ("trip_id", ASCENDING),
+                    ("transaction_id", ASCENDING),
+                ],
                 unique=True,
-                name="trip_transaction",
+                name="user_trip_transaction",
             ),
-            IndexModel([("transaction_id", ASCENDING)], name="transaction"),
+            IndexModel(
+                [("user_id", ASCENDING), ("transaction_id", ASCENDING)],
+                name="user_transaction",
+            ),
         ]
 
 
@@ -558,6 +623,9 @@ class DismissedTripProposal(Document):
     than on any identity the run itself carries.
     """
 
+    user_id: Indexed(PydanticObjectId) = Field(
+        ..., description="Whose proposal this is."
+    )
     anchor_id: str = Field(
         ...,
         description=(
@@ -575,7 +643,13 @@ class DismissedTripProposal(Document):
 
     class Settings:
         name = "dismissed_trip_proposals"
-        indexes = [IndexModel([("anchor_id", ASCENDING)], unique=True, name="anchor")]
+        indexes = [
+            IndexModel(
+                [("user_id", ASCENDING), ("anchor_id", ASCENDING)],
+                unique=True,
+                name="user_anchor",
+            )
+        ]
 
 
 class PatternDismissal(Document):
@@ -603,6 +677,9 @@ class PatternDismissal(Document):
     move, not the category.
     """
 
+    user_id: Indexed(PydanticObjectId) = Field(
+        ..., description="Whose finding this is."
+    )
     kind: str = Field(
         ...,
         description=(
@@ -632,8 +709,39 @@ class PatternDismissal(Document):
         name = "pattern_dismissals"
         indexes = [
             IndexModel(
-                [("kind", ASCENDING), ("subject", ASCENDING), ("month", ASCENDING)],
+                [
+                    ("user_id", ASCENDING),
+                    ("kind", ASCENDING),
+                    ("subject", ASCENDING),
+                    ("month", ASCENDING),
+                ],
                 unique=True,
-                name="kind_subject_month",
+                name="user_kind_subject_month",
             )
         ]
+
+
+class User(Document):
+    """
+    A person who can sign in.
+
+    Every other document in this file belongs to one, via its ``user_id``.
+    An account is made either by hand with ``scripts/create_user.py`` or by
+    signing up on the login page itself.
+    """
+
+    username: Indexed(str, unique=True) = Field(..., description="Login name.")
+    password_hash: str = Field(
+        ...,
+        description=(
+            "salt:digest hex pair from app.auth.hash_password. Never the "
+            "plaintext password, and never compared with anything but "
+            "app.auth.verify_password."
+        ),
+    )
+    created_at: datetime = Field(
+        default_factory=datetime.utcnow, description="When the account was made."
+    )
+
+    class Settings:
+        name = "users"

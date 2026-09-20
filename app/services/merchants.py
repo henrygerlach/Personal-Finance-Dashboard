@@ -3,6 +3,8 @@ Who actually gets the money, and how few of them there are.
 """
 
 
+from beanie import PydanticObjectId
+
 from app.config import get_logger
 from app.merchants import (
     LEADERBOARD,
@@ -55,7 +57,7 @@ class MerchantService:
         }
 
     @staticmethod
-    async def overview() -> dict:
+    async def overview(user_id: PydanticObjectId) -> dict:
         """
         Everything the merchants page draws.
 
@@ -65,7 +67,7 @@ class MerchantService:
         like the patterns page, for the same reason — a ranking cached against
         a re-import would outlive the transactions it ranked.
         """
-        transactions = await Transaction.find_all().to_list()
+        transactions = await Transaction.find(Transaction.user_id == user_id).to_list()
         analysis = concentration(transactions)
         by_id = {str(t.id): t for t in transactions}
 

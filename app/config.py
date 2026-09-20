@@ -3,6 +3,7 @@ Application configuration and settings.
 """
 
 import logging
+import secrets
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -22,6 +23,12 @@ class Settings(BaseSettings):
 
     # Logging
     log_level: str = "INFO"
+
+    #: Signs the session cookie a login sets. Set SESSION_SECRET_KEY in .env
+    #: to keep people signed in across restarts; left unset, a fresh key is
+    #: generated every startup, which simply signs everyone out rather than
+    #: doing anything insecure.
+    session_secret_key: str = Field(default_factory=lambda: secrets.token_hex(32))
 
     # Classification via the Claude API. The key is read here and never
     # reaches a template or a response body; the frontend is server-rendered,

@@ -54,6 +54,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app.auth import hash_password  # noqa: E402
 from app.categories import flow_type_for  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.database import db_manager  # noqa: E402
@@ -65,12 +66,17 @@ from app.models import (  # noqa: E402
     Transaction,
     Trip,
     TripAssignment,
+    User,
 )
 from app.normalization import merchant_key, normalize_merchant  # noqa: E402
 
 #: The only databases this script will write to. It drops collections, and the
 #: other two in the container are a real household's statements.
 REQUIRED_SUFFIX = "_demo"
+
+#: Login for the seeded account, so whoever takes the screenshots can sign in.
+DEMO_USERNAME = "demo"
+DEMO_PASSWORD = "demo"
 
 #: Fixed so the README's images can be regenerated exactly.
 SEED = 20260901
@@ -1187,10 +1193,11 @@ def build_queue(ledger: Ledger) -> None:
         )
 
 
-def transaction_of(row: dict) -> Transaction:
+def transaction_of(row: dict, user_id) -> Transaction:
     """One generated row as the document the application would have stored."""
     combined = f"{row['date']}{row['amount']}{row['booking_text']}{row['process']}"
     return Transaction(
+        user_id=user_id,
         hash=hashlib.md5(combined.encode()).hexdigest(),
         date=row["date"],
         amount=row["amount"],
@@ -1206,7 +1213,7 @@ def transaction_of(row: dict) -> Transaction:
     )
 
 
-def merchant_entries(rows: list[dict]) -> list[MerchantCategory]:
+def merchant_entries(rows: list[dict], user_id) -> list[MerchantCategory]:
     """
     The cache the classifier would hold after filing all of this.
 
@@ -1226,6 +1233,7 @@ def merchant_entries(rows: list[dict]) -> list[MerchantCategory]:
         entry = seen.get(key)
         if entry is None:
             seen[key] = MerchantCategory(
+                user_id=user_id,
                 merchant_key=key[0],
                 display_name=name,
                 direction=direction,
@@ -1247,10 +1255,14 @@ def merchant_entries(rows: list[dict]) -> list[MerchantCategory]:
 
 async def write(rows: list[dict]) -> dict:
     """Replace the demo database's contents with this ledger."""
-    for model in (Transaction, MerchantCategory, Trip, TripAssignment):
+    for model in (Transaction, MerchantCategory, Trip, TripAssignment, User):
         await model.find_all().delete()
 
-    documents = [transaction_of(row) for row in rows]
+    user = await User(
+        username=DEMO_USERNAME, password_hash=hash_password(DEMO_PASSWORD)
+    ).insert()
+
+    documents = [transaction_of(row, user.id) for row in rows]
     await Transaction.insert_many(documents)
 
     stored = {
@@ -1258,7 +1270,7 @@ async def write(rows: list[dict]) -> dict:
     }
     by_row = {id(row): stored[document.hash] for row, document in zip(rows, documents)}
 
-    entries = merchant_entries(rows)
+    entries = merchant_entries(rows, user.id)
     if entries:
         await MerchantCategory.insert_many(entries)
 
@@ -1266,6 +1278,7 @@ async def write(rows: list[dict]) -> dict:
     assignments = 0
     for journey in JOURNEYS:
         trip = Trip(
+            user_id=user.id,
             name=journey["name"],
             destination=journey["destination"],
             start_date=journey["start"],
@@ -1278,6 +1291,7 @@ async def write(rows: list[dict]) -> dict:
         members = [row for row in rows if row["tag"] == journey["name"]]
         for row in members:
             await TripAssignment(
+                user_id=user.id,
                 trip_id=str(trip.id),
                 transaction_id=str(by_row[id(row)].id),
                 decision="included",
@@ -1368,6 +1382,7 @@ async def main() -> int:
         f"merchant entries, {result['trips']} trips and {result['assignments']} "
         f"trip assignments to {settings.database_name}."
     )
+    print(f"Log in as {DEMO_USERNAME!r} / {DEMO_PASSWORD!r}.")
     return 0
 
 

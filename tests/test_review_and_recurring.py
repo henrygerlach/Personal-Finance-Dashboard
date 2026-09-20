@@ -15,10 +15,20 @@ from app.services import RecurringService, ReviewService
 from app.utils import should_exclude_transaction
 from tests.fixtures.odm import patch_services
 
+USER_ID = "u" * 24
+
+
+class _UserIdField:
+    """Stands in for a document's ``user_id`` field in a query expression."""
+
+    def __eq__(self, value):
+        return ("eq", value)
+
 
 def tx(tid="1", major="Uncategorized", minor="Needs Review", **extra):
     defaults = dict(
         id=tid,
+        user_id=USER_ID,
         date=datetime(2026, 8, 26),
         amount=-10.0,
         booking_text=" NYA HERING SANIKONZEPT ",
@@ -81,7 +91,7 @@ def _patch_correct(monkeypatch, transaction, remembered):
     async def save():
         return None
 
-    async def remember(name, major, minor, source, direction, **kwargs):
+    async def remember(user_id, name, major, minor, source, direction, **kwargs):
         remembered.append((name, major, minor, source, direction))
 
     transaction.save = save
@@ -109,7 +119,7 @@ def test_a_correction_files_the_transaction_and_teaches_the_merchant(
     import asyncio
 
     updated, cached = asyncio.run(
-        ReviewService.correct("1", "Housing", "Maintenance & Services")
+        ReviewService.correct(USER_ID, "1", "Housing", "Maintenance & Services")
     )
 
     assert (updated.major_category, updated.minor_category) == (
@@ -139,7 +149,7 @@ def test_an_invalid_pair_is_refused_rather_than_coerced(monkeypatch):
     import asyncio
 
     with pytest.raises(ValueError):
-        asyncio.run(ReviewService.correct("1", "Shopping", "Rent"))
+        asyncio.run(ReviewService.correct(USER_ID, "1", "Shopping", "Rent"))
     assert remembered == [], "nothing may be cached from a refused correction"
 
 
@@ -158,7 +168,7 @@ def test_a_correction_on_a_merchantless_line_reports_that_nothing_was_cached(
 
     import asyncio
 
-    _, cached = asyncio.run(ReviewService.correct("1", "Housing", "Rent"))
+    _, cached = asyncio.run(ReviewService.correct(USER_ID, "1", "Housing", "Rent"))
     assert cached is False
     assert remembered == []
 
@@ -296,15 +306,23 @@ def _overview(monkeypatch, transactions, overrides=()):
 
     patch_services(
         monkeypatch,
-        Transaction=SimpleNamespace(find_all=lambda: Query(transactions)),
+        Transaction=SimpleNamespace(
+            user_id=_UserIdField(),
+            find=lambda *a, **k: Query(transactions),
+            find_all=lambda: Query(transactions),
+        ),
     )
     patch_services(
         monkeypatch,
-        RecurringOverride=SimpleNamespace(find_all=lambda: Query(overrides)),
+        RecurringOverride=SimpleNamespace(
+            user_id=_UserIdField(),
+            find=lambda *a, **k: Query(overrides),
+            find_all=lambda: Query(overrides),
+        ),
     )
     import asyncio
 
-    return asyncio.run(RecurringService.overview())
+    return asyncio.run(RecurringService.overview(USER_ID))
 
 
 def _override(merchant, decision, amount, period="monthly"):
@@ -785,15 +803,21 @@ def test_a_dismissed_schedule_does_not_flag_its_transactions(monkeypatch):
 
     patch_services(
         monkeypatch,
-        Transaction=SimpleNamespace(find_all=lambda: Query(transactions)),
+        Transaction=SimpleNamespace(
+            user_id=_UserIdField(),
+            find=lambda *a, **k: Query(transactions),
+            find_all=lambda: Query(transactions),
+        ),
         RecurringOverride=SimpleNamespace(
-            find_all=lambda: Query([_override("BAECKEREI", "dismissed", -2.4)])
+            user_id=_UserIdField(),
+            find=lambda *a, **k: Query([_override("BAECKEREI", "dismissed", -2.4)]),
+            find_all=lambda: Query([_override("BAECKEREI", "dismissed", -2.4)]),
         ),
     )
 
     import asyncio
 
-    kept = asyncio.run(RecurringService.detect_and_store())
+    kept = asyncio.run(RecurringService.detect_and_store(USER_ID))
 
     assert [run.merchant for run in kept] == ["MIETE"]
     assert all(t.is_recurring for t in transactions if "MIETE" in t.booking_text)
@@ -826,7 +850,9 @@ def test_a_correction_against_an_id_that_is_not_an_id_is_a_value_error(monkeypat
     patch_services(monkeypatch, Transaction=SimpleNamespace(get=unreachable))
 
     with pytest.raises(ValueError):
-        asyncio.run(ReviewService.correct("not-an-id", "Food & Drink", "Groceries"))
+        asyncio.run(
+            ReviewService.correct(USER_ID, "not-an-id", "Food & Drink", "Groceries")
+        )
 
 
 # --- Two charges in a row ------------------------------------------------------
@@ -959,13 +985,21 @@ def test_an_unconfirmed_pair_does_not_flag_its_transactions(monkeypatch):
 
     patch_services(
         monkeypatch,
-        Transaction=SimpleNamespace(find_all=lambda: Query(transactions)),
-        RecurringOverride=SimpleNamespace(find_all=lambda: Query([])),
+        Transaction=SimpleNamespace(
+            user_id=_UserIdField(),
+            find=lambda *a, **k: Query(transactions),
+            find_all=lambda: Query(transactions),
+        ),
+        RecurringOverride=SimpleNamespace(
+            user_id=_UserIdField(),
+            find=lambda *a, **k: Query([]),
+            find_all=lambda: Query([]),
+        ),
     )
 
     import asyncio
 
-    kept = asyncio.run(RecurringService.detect_and_store())
+    kept = asyncio.run(RecurringService.detect_and_store(USER_ID))
 
     assert [run.merchant for run in kept] == ["MIETE"]
     assert not any(t.is_recurring for t in transactions if "FITNESS" in t.booking_text)

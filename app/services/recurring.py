@@ -9,6 +9,8 @@ from datetime import datetime, timedelta
 from statistics import median
 from typing import Optional
 
+from beanie import PydanticObjectId
+
 from app.config import get_logger
 from app.models import (
     OVERRIDE_ACTIVE,
@@ -225,16 +227,18 @@ class RecurringService:
     """Payments that repeat on a schedule, replacing the Subscriptions category."""
 
     @staticmethod
-    async def detect_and_store() -> list:
+    async def detect_and_store(user_id: PydanticObjectId) -> list:
         """
         Re-run detection over the whole history and mark the transactions.
 
         Recomputed rather than updated incrementally: a new charge can turn
         two earlier ones into a schedule, and can end one that has stopped.
         """
-        transactions = await Transaction.find_all().to_list()
+        transactions = await Transaction.find(Transaction.user_id == user_id).to_list()
         runs, pairs = _detect(transactions)
-        overrides = await RecurringOverride.find_all().to_list()
+        overrides = await RecurringOverride.find(
+            RecurringOverride.user_id == user_id
+        ).to_list()
 
         # A dismissed run is not a schedule, so its transactions must not
         # carry the flag either: the dashboard draws a "repeats" badge from
@@ -274,7 +278,7 @@ class RecurringService:
         return kept
 
     @staticmethod
-    async def overview() -> dict:
+    async def overview(user_id: PydanticObjectId) -> dict:
         """
         Every detected schedule, told apart by whether it is still running.
 
@@ -298,9 +302,11 @@ class RecurringService:
         the popup and the decision are the same ones, but out of the totals,
         the columns and the strip until the question is answered.
         """
-        transactions = await Transaction.find_all().to_list()
+        transactions = await Transaction.find(Transaction.user_id == user_id).to_list()
         runs, pairs = _detect(transactions)
-        overrides = await RecurringOverride.find_all().to_list()
+        overrides = await RecurringOverride.find(
+            RecurringOverride.user_id == user_id
+        ).to_list()
         by_id = {str(t.id): t for t in transactions}
 
         # "Now" is the end of the imported history, not today. Statements
@@ -509,7 +515,7 @@ class RecurringService:
         }
 
     @staticmethod
-    async def _locate(schedule_id: str) -> tuple:
+    async def _locate(user_id: PydanticObjectId, schedule_id: str) -> tuple:
         """
         The detected run a schedule id names, and the price it carries now.
 
@@ -519,7 +525,7 @@ class RecurringService:
         the browser.
         """
         anchor_id, _, period = schedule_id.partition("-")
-        transactions = await Transaction.find_all().to_list()
+        transactions = await Transaction.find(Transaction.user_id == user_id).to_list()
         by_id = {str(t.id): t for t in transactions}
 
         runs, pairs = _detect(transactions)
@@ -533,11 +539,14 @@ class RecurringService:
         return None, None
 
     @staticmethod
-    async def set_override(schedule_id: str, decision: str) -> dict:
+    async def set_override(
+        user_id: PydanticObjectId, schedule_id: str, decision: str
+    ) -> dict:
         """
         Record what the user says about one schedule.
 
         Args:
+            user_id: Whose ledger the schedule belongs to.
             schedule_id: The id the page carries for a detected run.
             decision: One of ``dismissed``, ``active`` or ``ended``.
 
@@ -551,12 +560,13 @@ class RecurringService:
         if decision not in OVERRIDE_DECISIONS:
             raise ValueError(f"Unknown decision {decision!r}")
 
-        run, amount = await RecurringService._locate(schedule_id)
+        run, amount = await RecurringService._locate(user_id, schedule_id)
         if run is None:
             raise ValueError(f"No detected schedule for {schedule_id!r}")
 
         key = merchant_key(run.merchant)
         existing = await RecurringOverride.find(
+            RecurringOverride.user_id == user_id,
             RecurringOverride.merchant_key == key,
             RecurringOverride.period == run.period,
         ).to_list()
@@ -564,6 +574,7 @@ class RecurringService:
         override = _matching_override(existing, run.merchant, run.period, amount)
         if override is None:
             override = RecurringOverride(
+                user_id=user_id,
                 merchant_key=key,
                 display_name=run.merchant,
                 period=run.period,
@@ -591,18 +602,19 @@ class RecurringService:
         return {"merchant": run.merchant, "decision": decision}
 
     @staticmethod
-    async def clear_override(schedule_id: str) -> bool:
+    async def clear_override(user_id: PydanticObjectId, schedule_id: str) -> bool:
         """
         Hand one schedule back to the detector.
 
         Returns:
             Whether there was a decision to undo.
         """
-        run, amount = await RecurringService._locate(schedule_id)
+        run, amount = await RecurringService._locate(user_id, schedule_id)
         if run is None:
             raise ValueError(f"No detected schedule for {schedule_id!r}")
 
         existing = await RecurringOverride.find(
+            RecurringOverride.user_id == user_id,
             RecurringOverride.merchant_key == merchant_key(run.merchant),
             RecurringOverride.period == run.period,
         ).to_list()

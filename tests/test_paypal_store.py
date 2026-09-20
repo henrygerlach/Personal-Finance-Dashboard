@@ -38,9 +38,12 @@ def run(coro):
     return asyncio.run(coro)
 
 
+USER_ID = "u" * 24
+
+
 @pytest.fixture
 def records(monkeypatch):
-    record_model = document("PayPalRecord", "code")
+    record_model = document("PayPalRecord", "code", "user_id")
     monkeypatch.setattr(store_module, "PayPalRecord", record_model)
     return record_model
 
@@ -69,7 +72,7 @@ def row(code="1A2B", kind="Allgemeine Zahlung", gross=-9.99, related="", **extra
 
 
 def test_a_new_row_is_stored(records):
-    result = run(store_rows([row()]))
+    result = run(store_rows(USER_ID, [row()]))
 
     assert result == ImportResult(read=1, added=1, already_known=0, detailed=0)
     assert len(records.rows) == 1
@@ -81,8 +84,8 @@ def test_importing_the_same_export_twice_adds_nothing(records):
     again. A second import that doubled every row would silently double every
     match made from them.
     """
-    run(store_rows([row()]))
-    result = run(store_rows([row()]))
+    run(store_rows(USER_ID, [row()]))
+    result = run(store_rows(USER_ID, [row()]))
 
     assert result.added == 0
     assert result.already_known == 1
@@ -94,9 +97,9 @@ def test_a_wider_export_costs_only_its_new_rows(records):
     Re-downloading a longer date range is the normal way to get last month's
     rows, so the overlap has to be free.
     """
-    run(store_rows([row(code="OLD")]))
+    run(store_rows(USER_ID, [row(code="OLD")]))
 
-    result = run(store_rows([row(code="OLD"), row(code="NEW")]))
+    result = run(store_rows(USER_ID, [row(code="OLD"), row(code="NEW")]))
 
     assert (result.added, result.already_known) == (1, 1)
 
@@ -106,7 +109,7 @@ def test_a_code_repeated_inside_one_file_is_stored_once(records):
     A single export can list the same code twice. Without this the insert
     carries a duplicate and the unique index rejects the whole batch.
     """
-    result = run(store_rows([row(code="X"), row(code="X")]))
+    result = run(store_rows(USER_ID, [row(code="X"), row(code="X")]))
 
     assert result.added == 1
     assert len(records.rows) == 1
@@ -117,7 +120,7 @@ def test_importing_nothing_is_not_a_query(records):
     An empty export is a valid file, and an empty ``$in`` is a query that asks
     the database for nothing at some expense.
     """
-    assert run(store_rows([])) == ImportResult()
+    assert run(store_rows(USER_ID, [])) == ImportResult()
 
 
 # --- A stored row is not rewritten --------------------------------------------
@@ -129,9 +132,9 @@ def test_a_stored_row_keeps_its_original_reading(records):
     later, the earlier reading is the one the bank statement was matched
     against, and overwriting it silently re-points matches already made.
     """
-    run(store_rows([row(code="X", gross=-9.99)]))
+    run(store_rows(USER_ID, [row(code="X", gross=-9.99)]))
 
-    run(store_rows([row(code="X", gross=-99.99, name="Somebody Else")]))
+    run(store_rows(USER_ID, [row(code="X", gross=-99.99, name="Somebody Else")]))
 
     assert records.rows[0].gross == -9.99
     assert records.rows[0].name == "Spotify AB"
@@ -143,9 +146,11 @@ def test_an_empty_message_field_is_filled_in_later(records):
     matches on a message, so writing one cannot re-point anything — and a
     blank that can never be filled is a note the user can never see.
     """
-    run(store_rows([row(code="X")]))
+    run(store_rows(USER_ID, [row(code="X")]))
 
-    result = run(store_rows([row(code="X", subject="Dinner", sender="a@example.com")]))
+    result = run(
+        store_rows(USER_ID, [row(code="X", subject="Dinner", sender="a@example.com")])
+    )
 
     assert result.detailed == 1
     assert records.rows[0].subject == "Dinner"
@@ -154,9 +159,9 @@ def test_an_empty_message_field_is_filled_in_later(records):
 
 def test_a_message_that_is_already_there_is_left_alone(records):
     """The exception is for empty fields only, or it is not an exception."""
-    run(store_rows([row(code="X", subject="Dinner")]))
+    run(store_rows(USER_ID, [row(code="X", subject="Dinner")]))
 
-    result = run(store_rows([row(code="X", subject="Something else")]))
+    result = run(store_rows(USER_ID, [row(code="X", subject="Something else")]))
 
     assert result.detailed == 0
     assert records.rows[0].subject == "Dinner"
@@ -164,9 +169,9 @@ def test_a_message_that_is_already_there_is_left_alone(records):
 
 def test_an_export_carrying_no_new_detail_reports_none(records):
     """The count is what the import summary tells the user it did."""
-    run(store_rows([row(code="X", subject="Dinner")]))
+    run(store_rows(USER_ID, [row(code="X", subject="Dinner")]))
 
-    assert run(store_rows([row(code="X", subject="Dinner")])).detailed == 0
+    assert run(store_rows(USER_ID, [row(code="X", subject="Dinner")])).detailed == 0
 
 
 # --- What the import says it did ----------------------------------------------
@@ -201,7 +206,7 @@ def test_an_export_is_read_and_stored(records):
     The upload page hands over bytes. This is the only path that exercises the
     reader and the store together.
     """
-    result = run(import_export(EXPORT.encode("utf-8")))
+    result = run(import_export(USER_ID, EXPORT.encode("utf-8")))
 
     assert result.added == 1
     assert records.rows[0].code == "PAY1"
@@ -213,7 +218,7 @@ def test_a_stored_date_is_a_datetime_rather_than_a_date(records):
     The export carries a day and the document stores a datetime. Mixing the
     two is a comparison that raises inside a query.
     """
-    run(store_rows([row()]))
+    run(store_rows(USER_ID, [row()]))
 
     assert isinstance(records.rows[0].date, datetime)
 
@@ -228,6 +233,7 @@ def test_the_ledger_is_built_from_what_is_stored(records):
     """
     run(
         store_rows(
+            USER_ID,
             [
                 row(code="PAY1", gross=-9.99, name="Spotify AB"),
                 row(
@@ -237,11 +243,11 @@ def test_the_ledger_is_built_from_what_is_stored(records):
                     related="PAY1",
                     name="",
                 ),
-            ]
+            ],
         )
     )
 
-    ledger = run(load_ledger())
+    ledger = run(load_ledger(USER_ID))
 
     assert ledger is not None
 
@@ -251,7 +257,7 @@ def test_a_ledger_over_no_rows_is_still_a_ledger(records):
     Nothing has been imported on a fresh install, and the classifier consults
     the ledger before it knows that.
     """
-    assert run(load_ledger()) is not None
+    assert run(load_ledger(USER_ID)) is not None
 
 
 def test_whether_anything_has_been_imported_yet(records):
@@ -259,11 +265,11 @@ def test_whether_anything_has_been_imported_yet(records):
     The funnel skips the PayPal step entirely when there is nothing to join
     against, so this is the question it asks first.
     """
-    assert run(has_records()) is False
+    assert run(has_records(USER_ID)) is False
 
-    run(store_rows([row()]))
+    run(store_rows(USER_ID, [row()]))
 
-    assert run(has_records()) is True
+    assert run(has_records(USER_ID)) is True
 
 
 # --- Getting back to a settlement ---------------------------------------------
@@ -274,8 +280,8 @@ def test_asking_about_no_codes_does_not_build_a_ledger(records):
     The review page calls this for every screenful, and most transactions
     carry no settlement code at all.
     """
-    assert run(settlement_details([])) == {}
-    assert run(settlement_details([None, ""])) == {}
+    assert run(settlement_details(USER_ID, [])) == {}
+    assert run(settlement_details(USER_ID, [None, ""])) == {}
 
 
 def test_a_code_the_export_does_not_cover_is_simply_absent(records):
@@ -283,6 +289,6 @@ def test_a_code_the_export_does_not_cover_is_simply_absent(records):
     An export can be narrower than the statement. A missing code is ordinary,
     not an error, and the page shows the line without the extra detail.
     """
-    run(store_rows([row(code="PAY1")]))
+    run(store_rows(USER_ID, [row(code="PAY1")]))
 
-    assert run(settlement_details(["NOT-IN-EXPORT"])) == {}
+    assert run(settlement_details(USER_ID, ["NOT-IN-EXPORT"])) == {}

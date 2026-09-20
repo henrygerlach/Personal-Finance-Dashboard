@@ -29,9 +29,12 @@ def run(coro):
     return asyncio.run(coro)
 
 
+USER_ID = "u" * 24
+
+
 @pytest.fixture
 def cache(monkeypatch):
-    cache_model = document("MerchantCategory", "merchant_key", "direction")
+    cache_model = document("MerchantCategory", "merchant_key", "direction", "user_id")
     monkeypatch.setattr(service_module, "MerchantCategory", cache_model)
     return cache_model
 
@@ -44,7 +47,9 @@ def remember(
     direction=DIRECTION_OUT,
     **extra,
 ):
-    return run(remember_merchant(name, major, minor, source, direction, **extra))
+    return run(
+        remember_merchant(USER_ID, name, major, minor, source, direction, **extra)
+    )
 
 
 # --- Writing ------------------------------------------------------------------
@@ -151,18 +156,18 @@ def test_the_model_version_is_recorded_so_old_entries_can_be_found(cache):
 def test_a_remembered_merchant_is_found_again(cache):
     remember("EDEKA")
 
-    entry = run(lookup_merchant("EDEKA", DIRECTION_OUT))
+    entry = run(lookup_merchant(USER_ID, "EDEKA", DIRECTION_OUT))
 
     assert entry is not None and entry.minor == "Groceries"
 
 
 def test_a_merchant_nobody_has_seen_is_a_miss(cache):
-    assert run(lookup_merchant("NEVER SEEN", DIRECTION_OUT)) is None
+    assert run(lookup_merchant(USER_ID, "NEVER SEEN", DIRECTION_OUT)) is None
 
 
 def test_a_lookup_with_no_name_is_a_miss_rather_than_a_query(cache):
     """Nothing can be said about a booking line holding no merchant."""
-    assert run(lookup_merchant("", DIRECTION_OUT)) is None
+    assert run(lookup_merchant(USER_ID, "", DIRECTION_OUT)) is None
 
 
 def test_the_asked_for_direction_wins_over_the_other_one(cache):
@@ -173,8 +178,8 @@ def test_the_asked_for_direction_wins_over_the_other_one(cache):
     remember("AMAZON", "Shopping", "General Merchandise", direction=DIRECTION_OUT)
     remember("AMAZON", "Income", "Refunds & Reimbursements", direction=DIRECTION_IN)
 
-    assert run(lookup_merchant("AMAZON", DIRECTION_OUT)).major == "Shopping"
-    assert run(lookup_merchant("AMAZON", DIRECTION_IN)).major == "Income"
+    assert run(lookup_merchant(USER_ID, "AMAZON", DIRECTION_OUT)).major == "Shopping"
+    assert run(lookup_merchant(USER_ID, "AMAZON", DIRECTION_IN)).major == "Income"
 
 
 def test_an_entry_learned_the_other_way_round_still_answers(cache):
@@ -185,7 +190,7 @@ def test_an_entry_learned_the_other_way_round_still_answers(cache):
     """
     remember("EDEKA", direction=DIRECTION_OUT)
 
-    assert run(lookup_merchant("EDEKA", DIRECTION_IN)) is not None
+    assert run(lookup_merchant(USER_ID, "EDEKA", DIRECTION_IN)) is not None
 
 
 def test_a_merchant_found_under_a_shorter_spelling_is_still_found(cache):
@@ -196,7 +201,10 @@ def test_a_merchant_found_under_a_shorter_spelling_is_still_found(cache):
     """
     remember("REWE MARKT GMBH")
 
-    assert run(lookup_merchant("REWE MARKT GMBH BERLIN", DIRECTION_OUT)) is not None
+    assert (
+        run(lookup_merchant(USER_ID, "REWE MARKT GMBH BERLIN", DIRECTION_OUT))
+        is not None
+    )
 
 
 # --- Writing a run back onto transactions -------------------------------------

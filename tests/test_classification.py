@@ -88,14 +88,17 @@ def make_transaction(
     )
 
 
+USER_ID = "u" * 24
+
+
 @pytest.fixture(autouse=True)
 def no_database(monkeypatch):
     """Neutralise the cache so each test opts into the behaviour it needs."""
 
-    async def no_lookup(name, direction):
+    async def no_lookup(user_id, name, direction):
         return None
 
-    async def no_remember(name, major, minor, source, direction, **kwargs):
+    async def no_remember(user_id, name, major, minor, source, direction, **kwargs):
         return None
 
     monkeypatch.setattr(service_module, "lookup_merchant", no_lookup)
@@ -104,7 +107,7 @@ def no_database(monkeypatch):
     # A service that was not given a ledger would otherwise go looking for one
     # in a database that is not there. Tests that want PayPal recovery inject
     # a ledger of their own, which suppresses this.
-    async def no_ledger(self):
+    async def no_ledger(self, user_id):
         return self._paypal_ledger
 
     monkeypatch.setattr(
@@ -181,7 +184,9 @@ def test_unresolvable_paypal_never_reaches_the_api():
         "Auftraggeber: PayPal (Europe) S.a r.l. et Cie, S.C.A. Buchungstext: "
         "1024177396132 PP.5189.PP . , Ihr Ei nkauf bei Ref. J82223",
     )
-    result = run(ClassificationService(classifier=stub).classify([transaction]))
+    result = run(
+        ClassificationService(classifier=stub).classify(USER_ID, [transaction])
+    )
 
     assert stub.seen == []
     assert result.fallbacks == 1
@@ -200,7 +205,9 @@ def test_the_paypal_fallback_is_not_sent_to_review_by_the_threshold():
         "PayPal (Europe) S.a r.l. et Cie, S.C.A. Buchungstext: "
         "PP.5189.PP . , Ihr Ei nkauf bei Ref. AB1",
     )
-    result = run(ClassificationService(classifier=stub).classify([transaction]))
+    result = run(
+        ClassificationService(classifier=stub).classify(USER_ID, [transaction])
+    )
     classification = result.classifications[0]
 
     assert classification.confidence == 0.0
@@ -255,7 +262,7 @@ def test_a_recovered_paypal_payee_is_classified_as_an_ordinary_merchant():
     service = ClassificationService(
         classifier=stub, paypal_ledger=paypal_ledger_naming("Spotify AB")
     )
-    result = run(service.classify([make_transaction("1", TRUNCATED_PAYPAL)]))
+    result = run(service.classify(USER_ID, [make_transaction("1", TRUNCATED_PAYPAL)]))
 
     assert result.paypal_recovered == 1
     assert result.fallbacks == 0
@@ -270,7 +277,7 @@ def test_a_recovered_payee_is_recorded_on_the_classification():
     service = ClassificationService(
         classifier=stub, paypal_ledger=paypal_ledger_naming("Spotify AB")
     )
-    result = run(service.classify([make_transaction("1", TRUNCATED_PAYPAL)]))
+    result = run(service.classify(USER_ID, [make_transaction("1", TRUNCATED_PAYPAL)]))
     classification = result.classifications[0]
 
     assert classification.paypal_counterparty == "Spotify AB"
@@ -285,7 +292,7 @@ def test_the_fallback_still_applies_when_the_ledger_cannot_name_the_payee():
         # The right payee, but for an amount this transaction does not have.
         paypal_ledger=paypal_ledger_naming("Spotify AB", amount=-99.0),
     )
-    result = run(service.classify([make_transaction("1", TRUNCATED_PAYPAL)]))
+    result = run(service.classify(USER_ID, [make_transaction("1", TRUNCATED_PAYPAL)]))
 
     assert stub.seen == []
     assert result.paypal_recovered == 0
@@ -306,10 +313,11 @@ def test_a_recovered_payee_merges_with_the_same_merchant_named_in_the_clear():
     )
     result = run(
         service.classify(
+            USER_ID,
             [
                 make_transaction("1", TRUNCATED_PAYPAL),
                 make_transaction("2", "Auftraggeber: Spotify AB"),
-            ]
+            ],
         )
     )
 
@@ -333,7 +341,7 @@ def test_a_paypal_line_that_names_its_merchant_is_left_alone():
         "Auftraggeber: PayPal (Europe) S.a r.l. et Cie, S.C.A. Buchungstext: "
         "PP.5189.PP . SPOTIFY, Ihr Einkauf bei SPOTIFY"
     )
-    result = run(service.classify([make_transaction("1", legible)]))
+    result = run(service.classify(USER_ID, [make_transaction("1", legible)]))
 
     assert result.paypal_recovered == 0
     assert [request.text for request in stub.seen] == ["SPOTIFY"]
@@ -342,7 +350,7 @@ def test_a_paypal_line_that_names_its_merchant_is_left_alone():
 def test_a_known_merchant_is_answered_from_the_cache(monkeypatch):
     saved = []
 
-    async def lookup(name, direction):
+    async def lookup(user_id, name, direction):
         entry = SimpleNamespace(
             major="Food & Drink",
             minor="Groceries",
@@ -360,7 +368,9 @@ def test_a_known_merchant_is_answered_from_the_cache(monkeypatch):
 
     stub = StubClassifier()
     transaction = make_transaction("1", " EDEKA BOECKER HAMBURG 000 ")
-    result = run(ClassificationService(classifier=stub).classify([transaction]))
+    result = run(
+        ClassificationService(classifier=stub).classify(USER_ID, [transaction])
+    )
 
     assert stub.seen == []
     assert result.cache_hits == 1
@@ -379,7 +389,7 @@ def test_a_debit_at_an_income_merchant_is_asked_about_instead_of_cached(monkeypa
     """
     asked = []
 
-    async def lookup(name, direction):
+    async def lookup(user_id, name, direction):
         asked.append(direction)
         entry = SimpleNamespace(
             major="Income",
@@ -398,7 +408,9 @@ def test_a_debit_at_an_income_merchant_is_asked_about_instead_of_cached(monkeypa
 
     stub = StubClassifier(results=[ClassificationResult("1", "13.8", 0.9)])
     transaction = make_transaction("1", " MAREN GERLACH ", amount=-52.50)
-    result = run(ClassificationService(classifier=stub).classify([transaction]))
+    result = run(
+        ClassificationService(classifier=stub).classify(USER_ID, [transaction])
+    )
 
     assert asked == ["out"]
     assert result.cache_hits == 0
@@ -410,7 +422,7 @@ def test_a_debit_at_an_income_merchant_is_asked_about_instead_of_cached(monkeypa
 def test_the_same_merchant_keeps_its_answer_for_the_other_direction(monkeypatch):
     """The incoming side of that merchant is untouched and still cached."""
 
-    async def lookup(name, direction):
+    async def lookup(user_id, name, direction):
         assert direction == "in"
         entry = SimpleNamespace(
             major="Income",
@@ -429,7 +441,9 @@ def test_the_same_merchant_keeps_its_answer_for_the_other_direction(monkeypatch)
 
     stub = StubClassifier()
     transaction = make_transaction("1", " MAREN GERLACH ", amount=500.0)
-    result = run(ClassificationService(classifier=stub).classify([transaction]))
+    result = run(
+        ClassificationService(classifier=stub).classify(USER_ID, [transaction])
+    )
 
     assert stub.seen == []
     assert result.cache_hits == 1
@@ -442,7 +456,7 @@ def test_use_cache_false_sends_everything_to_the_api(monkeypatch):
     transactions would measure the cache, not the model.
     """
 
-    async def lookup(name, direction):
+    async def lookup(user_id, name, direction):
         raise AssertionError("cache must not be consulted")
 
     monkeypatch.setattr(service_module, "lookup_merchant", lookup)
@@ -450,7 +464,9 @@ def test_use_cache_false_sends_everything_to_the_api(monkeypatch):
     stub = StubClassifier(results=[ClassificationResult("1", "3.1", 0.9)])
     transaction = make_transaction("1", " EDEKA BOECKER ")
     result = run(
-        ClassificationService(classifier=stub).classify([transaction], use_cache=False)
+        ClassificationService(classifier=stub).classify(
+            USER_ID, [transaction], use_cache=False
+        )
     )
 
     assert len(stub.seen) == 1
@@ -469,7 +485,7 @@ def test_an_unknown_code_is_discarded_rather_than_repaired():
     stub = StubClassifier(results=[ClassificationResult("1", "3.99", 0.99)])
     result = run(
         ClassificationService(classifier=stub).classify(
-            [make_transaction("1", " SOMETHING ")]
+            USER_ID, [make_transaction("1", " SOMETHING ")]
         )
     )
 
@@ -481,7 +497,7 @@ def test_a_result_below_the_threshold_goes_to_review():
     stub = StubClassifier(results=[ClassificationResult("1", "3.1", 0.55, "unsure")])
     result = run(
         ClassificationService(classifier=stub, threshold=0.7).classify(
-            [make_transaction("1", " SOMETHING ")]
+            USER_ID, [make_transaction("1", " SOMETHING ")]
         )
     )
 
@@ -494,7 +510,7 @@ def test_a_result_at_the_threshold_is_kept():
     stub = StubClassifier(results=[ClassificationResult("1", "3.1", 0.7)])
     result = run(
         ClassificationService(classifier=stub, threshold=0.7).classify(
-            [make_transaction("1", " SOMETHING ")]
+            USER_ID, [make_transaction("1", " SOMETHING ")]
         )
     )
 
@@ -506,7 +522,7 @@ def test_a_low_confidence_result_is_not_written_to_the_cache(monkeypatch):
     """A guess must not become the remembered answer for a merchant."""
     remembered = []
 
-    async def remember(name, major, minor, source, direction, **kwargs):
+    async def remember(user_id, name, major, minor, source, direction, **kwargs):
         remembered.append((name, major, minor, source, direction))
 
     monkeypatch.setattr(service_module, "remember_merchant", remember)
@@ -514,7 +530,7 @@ def test_a_low_confidence_result_is_not_written_to_the_cache(monkeypatch):
     stub = StubClassifier(results=[ClassificationResult("1", "3.1", 0.4, "unsure")])
     run(
         ClassificationService(classifier=stub, threshold=0.7).classify(
-            [make_transaction("1", " SOMETHING ")]
+            USER_ID, [make_transaction("1", " SOMETHING ")]
         )
     )
     assert remembered == []
@@ -523,7 +539,7 @@ def test_a_low_confidence_result_is_not_written_to_the_cache(monkeypatch):
 def test_an_accepted_result_is_written_to_the_cache(monkeypatch):
     remembered = []
 
-    async def remember(name, major, minor, source, direction, **kwargs):
+    async def remember(user_id, name, major, minor, source, direction, **kwargs):
         remembered.append((name, major, minor, source, direction))
 
     monkeypatch.setattr(service_module, "remember_merchant", remember)
@@ -531,7 +547,7 @@ def test_an_accepted_result_is_written_to_the_cache(monkeypatch):
     stub = StubClassifier(results=[ClassificationResult("1", "3.1", 0.95)])
     run(
         ClassificationService(classifier=stub).classify(
-            [make_transaction("1", " NEUER LADEN ")]
+            USER_ID, [make_transaction("1", " NEUER LADEN ")]
         )
     )
     assert remembered == [
@@ -550,7 +566,8 @@ def test_a_failed_batch_becomes_review_rather_than_an_exception():
     )
     result = run(
         ClassificationService(classifier=stub).classify(
-            [make_transaction("1", " A SHOP "), make_transaction("2", " B SHOP ")]
+            USER_ID,
+            [make_transaction("1", " A SHOP "), make_transaction("2", " B SHOP ")],
         )
     )
 
@@ -575,7 +592,7 @@ def test_every_transaction_gets_exactly_one_classification():
         make_transaction("2", " B "),
         make_transaction("3", " C "),
     ]
-    result = run(ClassificationService(classifier=stub).classify(transactions))
+    result = run(ClassificationService(classifier=stub).classify(USER_ID, transactions))
 
     assert len(result.classifications) == 3
     assert {c.transaction_id for c in result.classifications} == {"1", "2", "3"}
@@ -598,7 +615,7 @@ def test_flow_type_is_derived_not_taken_from_the_model():
         make_transaction("2", " B "),
         make_transaction("3", " C "),
     ]
-    result = run(ClassificationService(classifier=stub).classify(transactions))
+    result = run(ClassificationService(classifier=stub).classify(USER_ID, transactions))
     flows = {c.transaction_id: c.flow_type for c in result.classifications}
 
     assert flows == {"1": "income", "2": "transfer", "3": "expense"}
@@ -669,7 +686,7 @@ def test_the_refund_rule_runs_on_cache_hits_too(monkeypatch):
     category for both directions.
     """
 
-    async def lookup(name, direction):
+    async def lookup(user_id, name, direction):
         entry = SimpleNamespace(
             major="Shopping",
             minor="General Merchandise",
@@ -688,7 +705,9 @@ def test_the_refund_rule_runs_on_cache_hits_too(monkeypatch):
 
     stub = StubClassifier()
     transaction = make_transaction("1", " AMAZON ", amount=4.49)
-    result = run(ClassificationService(classifier=stub).classify([transaction]))
+    result = run(
+        ClassificationService(classifier=stub).classify(USER_ID, [transaction])
+    )
 
     assert result.cache_hits == 1
     assert result.refunds == 1
@@ -710,7 +729,9 @@ def test_one_merchant_seen_many_times_is_asked_about_once(monkeypatch):
         make_transaction("3", " EDEKA BOECKER "),
     ]
     result = run(
-        ClassificationService(classifier=stub).classify(transactions, use_cache=False)
+        ClassificationService(classifier=stub).classify(
+            USER_ID, transactions, use_cache=False
+        )
     )
 
     assert len(stub.seen) == 1, "the same merchant was sent more than once"
@@ -736,7 +757,7 @@ def test_an_injected_classifier_never_grows_a_real_one_behind_it(monkeypatch):
 
     stub = StubClassifier(results=[ClassificationResult("1", "3.1", 0.2, "unsure")])
     service = ClassificationService(classifier=stub)
-    result = run(service.classify([make_transaction("1", " A SHOP ")]))
+    result = run(service.classify(USER_ID, [make_transaction("1", " A SHOP ")]))
 
     assert service._get_escalation_classifier() is None
     assert result.escalated == 0
@@ -766,7 +787,7 @@ def test_escalation_re_asks_only_what_fell_short():
     ]
     result = run(
         ClassificationService(classifier=weak, escalation_classifier=strong).classify(
-            transactions, use_cache=False
+            USER_ID, transactions, use_cache=False
         )
     )
 
@@ -794,7 +815,7 @@ def test_escalation_that_stays_unsure_leaves_the_first_answer_alone():
     )
     result = run(
         ClassificationService(classifier=weak, escalation_classifier=strong).classify(
-            [make_transaction("1", " A SHOP ")], use_cache=False
+            USER_ID, [make_transaction("1", " A SHOP ")], use_cache=False
         )
     )
 
@@ -809,7 +830,7 @@ def test_escalation_can_be_switched_off():
     result = run(
         ClassificationService(
             classifier=weak, escalation_classifier=strong, escalate=False
-        ).classify([make_transaction("1", " A SHOP ")], use_cache=False)
+        ).classify(USER_ID, [make_transaction("1", " A SHOP ")], use_cache=False)
     )
     assert result.escalated == 0
     assert strong.seen == []
@@ -819,7 +840,7 @@ def test_an_escalated_result_is_cached_under_the_stronger_model():
     """model_version has to name the model that actually decided."""
     remembered = []
 
-    async def remember(name, major, minor, source, direction, **kwargs):
+    async def remember(user_id, name, major, minor, source, direction, **kwargs):
         remembered.append((name, kwargs.get("model_version")))
 
     weak = StubClassifier(results=[ClassificationResult("1", "3.1", 0.4, "x")])
@@ -829,7 +850,11 @@ def test_an_escalated_result_is_cached_under_the_stronger_model():
     service = ClassificationService(classifier=weak, escalation_classifier=strong)
     service_module.remember_merchant = remember
     try:
-        run(service.classify([make_transaction("1", " A SHOP ")], use_cache=False))
+        run(
+            service.classify(
+                USER_ID, [make_transaction("1", " A SHOP ")], use_cache=False
+            )
+        )
     finally:
         pass
 
@@ -851,7 +876,7 @@ def test_the_report_counts_review_from_the_result_not_from_the_calls():
     )
     result = run(
         ClassificationService(classifier=weak, escalation_classifier=strong).classify(
-            [make_transaction("1", " A SHOP ")], use_cache=False
+            USER_ID, [make_transaction("1", " A SHOP ")], use_cache=False
         )
     )
 
@@ -866,7 +891,9 @@ def test_the_report_survives_a_run_that_made_no_api_calls():
         "1",
         "PayPal (Europe) Buchungstext: PP.5189.PP . , Ihr Ei nkauf bei Ref. A1",
     )
-    result = run(ClassificationService(classifier=stub).classify([transaction]))
+    result = run(
+        ClassificationService(classifier=stub).classify(USER_ID, [transaction])
+    )
     report = "\n".join(report_lines(result, 1))
     assert "merchants asked      : 0" in report
     assert "PayPal fallback    : 1" in report
@@ -961,7 +988,9 @@ def test_a_debit_that_still_carries_an_income_category_goes_to_review():
     """
     stub = StubClassifier(results=[ClassificationResult("1", "1.6", 0.95)])
     transaction = make_transaction("1", " MAREN GERLACH ", amount=-52.50)
-    result = run(ClassificationService(classifier=stub).classify([transaction]))
+    result = run(
+        ClassificationService(classifier=stub).classify(USER_ID, [transaction])
+    )
 
     assert result.misfiled_income == 1
     decided = result.classifications[0]

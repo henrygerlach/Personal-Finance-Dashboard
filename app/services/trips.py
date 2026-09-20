@@ -6,6 +6,8 @@ One journey: what it cost, and what it may be missing.
 from collections import Counter
 from datetime import datetime, timedelta
 
+from beanie import PydanticObjectId
+
 from app.config import get_logger
 from app.models import (
     TRIP_DECISIONS,
@@ -34,9 +36,6 @@ from app.trips import (
 )
 
 logger = get_logger(__name__)
-
-logger = get_logger(__name__)
-
 
 #: The largest group a trip can be split between. Not a real limit on
 #: friendship, just a guard so a stray keystroke cannot divide a holiday by
@@ -81,7 +80,9 @@ class TripService:
     """
 
     @staticmethod
-    async def _assigned_rows(trip, by_id: dict) -> list[tuple]:
+    async def _assigned_rows(
+        user_id: PydanticObjectId, trip, by_id: dict
+    ) -> list[tuple]:
         """
         The ``(transaction, share)`` pairs one trip owns, oldest first.
 
@@ -91,6 +92,7 @@ class TripService:
         transaction may well come back on the next import.
         """
         assignments = await TripAssignment.find(
+            TripAssignment.user_id == user_id,
             TripAssignment.trip_id == str(trip.id),
             TripAssignment.decision == TRIP_INCLUDED,
         ).to_list()
@@ -102,7 +104,7 @@ class TripService:
         return sorted(rows, key=lambda row: row[0].date)
 
     @staticmethod
-    async def overview() -> dict:
+    async def overview(user_id: PydanticObjectId) -> dict:
         """
         Every trip with what it cost, most recent departure first.
 
@@ -111,17 +113,17 @@ class TripService:
             sum of nets: what travelling has actually cost, after everything
             that came back.
         """
-        trips = await Trip.find_all().sort("-start_date").to_list()
+        trips = await Trip.find(Trip.user_id == user_id).sort("-start_date").to_list()
         if not trips:
             return {"trips": [], "count": 0, "total_net": 0.0, "total_spend": 0.0}
 
-        transactions = await Transaction.find_all().to_list()
+        transactions = await Transaction.find(Transaction.user_id == user_id).to_list()
         by_id = {str(t.id): t for t in transactions}
 
         items = []
         for trip in trips:
             start, end = _trip_window(trip)
-            rows = await TripService._assigned_rows(trip, by_id)
+            rows = await TripService._assigned_rows(user_id, trip, by_id)
             summary = summarize(rows, start, end, trip.split_ways)
             items.append(
                 {
@@ -160,21 +162,22 @@ class TripService:
         }
 
     @staticmethod
-    async def detail(trip_id: str) -> dict:
+    async def detail(user_id: PydanticObjectId, trip_id: str) -> dict:
         """
         One trip: what it cost, what is assigned to it, and what it might miss.
 
         Raises:
             ValueError: No trip answers to that id.
         """
-        trip = await TripService._get(trip_id)
+        trip = await TripService._get(user_id, trip_id)
         start, end = _trip_window(trip)
 
-        transactions = await Transaction.find_all().to_list()
+        transactions = await Transaction.find(Transaction.user_id == user_id).to_list()
         by_id = {str(t.id): t for t in transactions}
 
         assignments = await TripAssignment.find(
-            TripAssignment.trip_id == str(trip.id)
+            TripAssignment.user_id == user_id,
+            TripAssignment.trip_id == str(trip.id),
         ).to_list()
         decided = {a.transaction_id: a for a in assignments}
 
@@ -189,8 +192,8 @@ class TripService:
         # Which transactions other trips have already claimed. One booking
         # counted by two trips would be plausible in each and a lie across
         # both, so a claimed line is shown as claimed rather than offered.
-        claims = await TripService._claims(exclude_trip_id=str(trip.id))
-        all_trips = await Trip.find_all().to_list()
+        claims = await TripService._claims(user_id, exclude_trip_id=str(trip.id))
+        all_trips = await Trip.find(Trip.user_id == user_id).to_list()
         trip_names = {str(t.id): t.name for t in all_trips}
 
         assigned = []
@@ -291,21 +294,24 @@ class TripService:
         }
 
     @staticmethod
-    async def _get(trip_id: str) -> Trip:
+    async def _get(user_id: PydanticObjectId, trip_id: str) -> Trip:
         """One trip by id, or a ValueError the route can turn into a 404."""
         try:
             trip = await Trip.get(object_id(trip_id))
         except ValueError:  # an id that is not an object id at all
             trip = None
-        if trip is None:
+        if trip is None or trip.user_id != user_id:
             raise ValueError(f"No trip {trip_id!r}")
         return trip
 
     @staticmethod
-    async def _claims(exclude_trip_id: str | None = None) -> dict[str, str]:
+    async def _claims(
+        user_id: PydanticObjectId, exclude_trip_id: str | None = None
+    ) -> dict[str, str]:
         """Transaction id -> the trip that has already included it."""
         included = await TripAssignment.find(
-            TripAssignment.decision == TRIP_INCLUDED
+            TripAssignment.user_id == user_id,
+            TripAssignment.decision == TRIP_INCLUDED,
         ).to_list()
         return {
             a.transaction_id: a.trip_id
@@ -315,6 +321,7 @@ class TripService:
 
     @staticmethod
     async def create(
+        user_id: PydanticObjectId,
         name: str,
         start_date: datetime,
         end_date: datetime,
@@ -335,6 +342,7 @@ class TripService:
             raise ValueError("A trip cannot end before it starts")
 
         trip = Trip(
+            user_id=user_id,
             name=name,
             destination=(destination or "").strip() or None,
             start_date=start_date,
@@ -353,6 +361,7 @@ class TripService:
 
     @staticmethod
     async def update(
+        user_id: PydanticObjectId,
         trip_id: str,
         name: str,
         start_date: datetime,
@@ -368,7 +377,7 @@ class TripService:
         the user has already decided is theirs, and a date correction is not a
         retraction of it.
         """
-        trip = await TripService._get(trip_id)
+        trip = await TripService._get(user_id, trip_id)
         name = (name or "").strip()
         if not name:
             raise ValueError("A trip needs a name")
@@ -385,16 +394,17 @@ class TripService:
         return trip
 
     @staticmethod
-    async def delete(trip_id: str) -> int:
+    async def delete(user_id: PydanticObjectId, trip_id: str) -> int:
         """
         Remove a trip and every decision made about it.
 
         Returns:
             How many assignments went with it.
         """
-        trip = await TripService._get(trip_id)
+        trip = await TripService._get(user_id, trip_id)
         assignments = await TripAssignment.find(
-            TripAssignment.trip_id == str(trip.id)
+            TripAssignment.user_id == user_id,
+            TripAssignment.trip_id == str(trip.id),
         ).to_list()
         for assignment in assignments:
             await assignment.delete()
@@ -404,6 +414,7 @@ class TripService:
 
     @staticmethod
     async def assign(
+        user_id: PydanticObjectId,
         trip_id: str,
         transaction_id: str,
         decision: str,
@@ -432,16 +443,22 @@ class TripService:
         Raises:
             ValueError: Unknown trip, unknown decision, or a share outside 0-1.
         """
-        trip = await TripService._get(trip_id)
-        moved_from = await TripService._write(trip, transaction_id, decision, share)
+        trip = await TripService._get(user_id, trip_id)
+        moved_from = await TripService._write(
+            user_id, trip, transaction_id, decision, share
+        )
         return {
             "moved_from": moved_from,
-            "summary": await TripService.summary(trip_id),
+            "summary": await TripService.summary(user_id, trip_id),
         }
 
     @staticmethod
     async def _write(
-        trip, transaction_id: str, decision: str, share: float = 1.0
+        user_id: PydanticObjectId,
+        trip,
+        transaction_id: str,
+        decision: str,
+        share: float = 1.0,
     ) -> str | None:
         """
         Store one decision, without recomputing anything.
@@ -465,6 +482,7 @@ class TripService:
         moved_from = None
         if decision == TRIP_INCLUDED:
             elsewhere = await TripAssignment.find(
+                TripAssignment.user_id == user_id,
                 TripAssignment.transaction_id == transaction_id,
                 TripAssignment.decision == TRIP_INCLUDED,
             ).to_list()
@@ -479,11 +497,13 @@ class TripService:
                 await held.delete()
 
         existing = await TripAssignment.find_one(
+            TripAssignment.user_id == user_id,
             TripAssignment.trip_id == str(trip.id),
             TripAssignment.transaction_id == transaction_id,
         )
         if existing is None:
             await TripAssignment(
+                user_id=user_id,
                 trip_id=str(trip.id),
                 transaction_id=transaction_id,
                 decision=decision,
@@ -497,15 +517,18 @@ class TripService:
         return moved_from
 
     @staticmethod
-    async def clear(trip_id: str, transaction_id: str) -> dict:
+    async def clear(
+        user_id: PydanticObjectId, trip_id: str, transaction_id: str
+    ) -> dict:
         """
         Undo a decision, handing the transaction back to the suggester.
 
         Not the same as excluding it: an exclusion is an answer and stops the
         suggester asking, while clearing forgets the question was ever put.
         """
-        trip = await TripService._get(trip_id)
+        trip = await TripService._get(user_id, trip_id)
         existing = await TripAssignment.find_one(
+            TripAssignment.user_id == user_id,
             TripAssignment.trip_id == str(trip.id),
             TripAssignment.transaction_id == transaction_id,
         )
@@ -513,11 +536,13 @@ class TripService:
             await existing.delete()
         return {
             "cleared": existing is not None,
-            "summary": await TripService.summary(trip_id),
+            "summary": await TripService.summary(user_id, trip_id),
         }
 
     @staticmethod
-    async def assign_many(trip_id: str, transaction_ids: list[str]) -> int:
+    async def assign_many(
+        user_id: PydanticObjectId, trip_id: str, transaction_ids: list[str]
+    ) -> int:
         """
         Assign exactly the transactions the user selected.
 
@@ -531,22 +556,22 @@ class TripService:
         Returns:
             How many assignments were written.
         """
-        trip = await TripService._get(trip_id)
+        trip = await TripService._get(user_id, trip_id)
         written = 0
         for transaction_id in transaction_ids:
-            await TripService._write(trip, transaction_id, TRIP_INCLUDED)
+            await TripService._write(user_id, trip, transaction_id, TRIP_INCLUDED)
             written += 1
         logger.info("Trip %s: assigned %s selected", trip.name, written)
         return written
 
     @staticmethod
-    async def summary(trip_id: str) -> dict:
+    async def summary(user_id: PydanticObjectId, trip_id: str) -> dict:
         """Just the totals for one trip, for a page updating in place."""
-        trip = await TripService._get(trip_id)
+        trip = await TripService._get(user_id, trip_id)
         start, end = _trip_window(trip)
-        transactions = await Transaction.find_all().to_list()
+        transactions = await Transaction.find(Transaction.user_id == user_id).to_list()
         by_id = {str(t.id): t for t in transactions}
-        rows = await TripService._assigned_rows(trip, by_id)
+        rows = await TripService._assigned_rows(user_id, trip, by_id)
         summary = summarize(rows, start, end, trip.split_ways)
         summary["budget"] = trip.budget
         summary["budget_share"] = (
@@ -555,7 +580,7 @@ class TripService:
         return summary
 
     @staticmethod
-    async def search(trip_id: str, query: str) -> list[dict]:
+    async def search(user_id: PydanticObjectId, trip_id: str, query: str) -> list[dict]:
         """
         Transactions matching a search, for attaching what the windows missed.
 
@@ -565,13 +590,14 @@ class TripService:
         merchant and on the bank's own booking line, because the merchant is
         derived and the line is what was actually recorded.
         """
-        trip = await TripService._get(trip_id)
+        trip = await TripService._get(user_id, trip_id)
         needle = (query or "").strip().lower()
         if len(needle) < 2:
             return []
 
-        claims = await TripService._claims(exclude_trip_id=None)
-        trip_names = {str(t.id): t.name for t in await Trip.find_all().to_list()}
+        claims = await TripService._claims(user_id, exclude_trip_id=None)
+        trips = await Trip.find(Trip.user_id == user_id).to_list()
+        trip_names = {str(t.id): t.name for t in trips}
 
         def hit(transaction) -> bool:
             return (
@@ -583,7 +609,7 @@ class TripService:
         page = 0
         while len(matches) < TRIP_SEARCH_RESULTS:
             batch = await (
-                Transaction.find()
+                Transaction.find(Transaction.user_id == user_id)
                 .sort("-date")
                 .skip(page * TRIP_SEARCH_PAGE)
                 .limit(TRIP_SEARCH_PAGE)
@@ -608,7 +634,7 @@ class TripService:
         return results
 
     @staticmethod
-    async def proposals() -> dict:
+    async def proposals(user_id: PydanticObjectId) -> dict:
         """
         Stretches of history that look like journeys and are not recorded yet.
 
@@ -627,11 +653,13 @@ class TripService:
             ones already refused, so a refusal can be undone; and what the
             detector cannot see, which the page has to say out loud.
         """
-        transactions = await Transaction.find_all().to_list()
-        trips = await Trip.find_all().to_list()
+        transactions = await Transaction.find(Transaction.user_id == user_id).to_list()
+        trips = await Trip.find(Trip.user_id == user_id).to_list()
         refused = {
             row.anchor_id: row
-            for row in await DismissedTripProposal.find_all().to_list()
+            for row in await DismissedTripProposal.find(
+                DismissedTripProposal.user_id == user_id
+            ).to_list()
         }
 
         by_id = {str(t.id): t for t in transactions}
@@ -699,7 +727,7 @@ class TripService:
         }
 
     @staticmethod
-    async def dismiss_proposal(anchor_id: str) -> bool:
+    async def dismiss_proposal(user_id: PydanticObjectId, anchor_id: str) -> bool:
         """
         Refuse one proposal, so the detector stops offering it.
 
@@ -707,16 +735,18 @@ class TripService:
             Whether this was a new refusal.
         """
         existing = await DismissedTripProposal.find_one(
-            DismissedTripProposal.anchor_id == anchor_id
+            DismissedTripProposal.user_id == user_id,
+            DismissedTripProposal.anchor_id == anchor_id,
         )
         if existing is not None:
             return False
 
-        transactions = await Transaction.find_all().to_list()
+        transactions = await Transaction.find(Transaction.user_id == user_id).to_list()
         for candidate in find_trip_candidates(transactions):
             if candidate.anchor_id != anchor_id:
                 continue
             await DismissedTripProposal(
+                user_id=user_id,
                 anchor_id=anchor_id,
                 start_date=candidate.start,
                 end_date=candidate.end,
@@ -730,10 +760,11 @@ class TripService:
         raise ValueError(f"No detected trip for {anchor_id!r}")
 
     @staticmethod
-    async def restore_proposal(anchor_id: str) -> bool:
+    async def restore_proposal(user_id: PydanticObjectId, anchor_id: str) -> bool:
         """Hand one refused proposal back to the detector."""
         existing = await DismissedTripProposal.find_one(
-            DismissedTripProposal.anchor_id == anchor_id
+            DismissedTripProposal.user_id == user_id,
+            DismissedTripProposal.anchor_id == anchor_id,
         )
         if existing is None:
             return False
@@ -741,7 +772,7 @@ class TripService:
         return True
 
     @staticmethod
-    async def set_split(trip_id: str, ways: int) -> dict:
+    async def set_split(user_id: PydanticObjectId, trip_id: str, ways: int) -> dict:
         """
         Say how many people the whole journey was shared between.
 
@@ -766,8 +797,11 @@ class TripService:
             raise ValueError(
                 f"A trip can be split between 1 and {MAX_SPLIT_WAYS} people"
             )
-        trip = await TripService._get(trip_id)
+        trip = await TripService._get(user_id, trip_id)
         trip.split_ways = ways
         await trip.save()
         logger.info("Trip %s split %s ways", trip.name, ways)
-        return {"split_ways": ways, "summary": await TripService.summary(trip_id)}
+        return {
+            "split_ways": ways,
+            "summary": await TripService.summary(user_id, trip_id),
+        }

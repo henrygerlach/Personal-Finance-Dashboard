@@ -48,6 +48,7 @@ from app.models import (  # noqa: E402
     SOURCE_USER,
     MerchantCategory,
     Transaction,
+    User,
 )
 from app.normalization import (  # noqa: E402
     build_canonical_map,
@@ -71,7 +72,7 @@ def _legacy_pair_of(transaction: Transaction) -> tuple[str, str]:
     return major, minor
 
 
-async def migrate(dry_run: bool) -> tuple[int, list]:
+async def migrate(user_id, dry_run: bool) -> tuple[int, list]:
     """
     Translate every unmigrated transaction.
 
@@ -80,7 +81,7 @@ async def migrate(dry_run: bool) -> tuple[int, list]:
         ``(transaction, new_pair, provisional)`` triples, so a dry run can
         preview the merchant cache without having written anything.
     """
-    transactions = await Transaction.find_all().to_list()
+    transactions = await Transaction.find(Transaction.user_id == user_id).to_list()
 
     already = [t for t in transactions if t.legacy_major is not None]
     pending = [t for t in transactions if t.legacy_major is None]
@@ -169,7 +170,9 @@ async def migrate(dry_run: bool) -> tuple[int, list]:
     return (1 if unmapped else 0), changes
 
 
-async def fill_merchant_cache(dry_run: bool, planned: list | None = None) -> None:
+async def fill_merchant_cache(
+    user_id, dry_run: bool, planned: list | None = None
+) -> None:
     """
     Seed the merchant cache from the migrated transactions.
 
@@ -195,7 +198,8 @@ async def fill_merchant_cache(dry_run: bool, planned: list | None = None) -> Non
         rows = [
             (transaction, (transaction.major_category, transaction.minor_category))
             for transaction in await Transaction.find(
-                Transaction.classification_source == SOURCE_LEGACY_RULES
+                Transaction.user_id == user_id,
+                Transaction.classification_source == SOURCE_LEGACY_RULES,
             ).to_list()
         ]
 
@@ -262,7 +266,9 @@ async def fill_merchant_cache(dry_run: bool, planned: list | None = None) -> Non
 
     existing = {
         entry.merchant_key: entry
-        for entry in await MerchantCategory.find_all().to_list()
+        for entry in await MerchantCategory.find(
+            MerchantCategory.user_id == user_id
+        ).to_list()
     }
     written = 0
     for merchant, counter in agreed.items():
@@ -271,6 +277,7 @@ async def fill_merchant_cache(dry_run: bool, planned: list | None = None) -> Non
         now = datetime.utcnow()
         if entry is None:
             await MerchantCategory(
+                user_id=user_id,
                 merchant_key=merchant,
                 display_name=display[merchant],
                 major=major,
@@ -297,12 +304,13 @@ async def fill_merchant_cache(dry_run: bool, planned: list | None = None) -> Non
     print(f"Wrote {written} merchant cache entries.")
 
 
-async def rollback(dry_run: bool) -> int:
+async def rollback(user_id, dry_run: bool) -> int:
     """Restore the legacy categories and drop everything the migration derived."""
     transactions = await Transaction.find(
-        Transaction.legacy_major != None  # noqa: E711 — Beanie builds a query here
+        Transaction.user_id == user_id,
+        Transaction.legacy_major != None,  # noqa: E711 — Beanie builds a query here
     ).to_list()
-    merchants = await MerchantCategory.find_all().count()
+    merchants = await MerchantCategory.find(MerchantCategory.user_id == user_id).count()
 
     print(f"migrated transactions: {len(transactions)}")
     print(f"merchant cache entries: {merchants} (all will be removed)")
@@ -329,7 +337,7 @@ async def rollback(dry_run: bool) -> int:
     # The cache is derived entirely from the migration at this point, so it
     # goes with it. Once corrections can be made in the UI this becomes
     # destructive and needs revisiting.
-    await MerchantCategory.find_all().delete()
+    await MerchantCategory.find(MerchantCategory.user_id == user_id).delete()
 
     print(f"\nRestored {len(transactions)} transactions, cleared the merchant cache.")
     return 0
@@ -337,6 +345,7 @@ async def rollback(dry_run: bool) -> int:
 
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[1])
+    parser.add_argument("username", help="whose transactions to migrate")
     parser.add_argument(
         "--dry-run", action="store_true", help="report what would change, write nothing"
     )
@@ -357,10 +366,15 @@ async def main() -> int:
 
     await db_manager.connect()
     try:
+        user = await User.find_one(User.username == args.username)
+        if user is None:
+            print(f"No user {args.username!r}.")
+            return 1
+
         if args.rollback:
-            return await rollback(args.dry_run)
-        code, planned = await migrate(args.dry_run)
-        await fill_merchant_cache(args.dry_run, planned)
+            return await rollback(user.id, args.dry_run)
+        code, planned = await migrate(user.id, args.dry_run)
+        await fill_merchant_cache(user.id, args.dry_run, planned)
         return code
     finally:
         await db_manager.disconnect()

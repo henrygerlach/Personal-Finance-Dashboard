@@ -20,13 +20,16 @@ from types import SimpleNamespace
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.middleware.sessions import SessionMiddleware
 
 from app import routes
+from app.auth import current_user
 from app.classification.client import ClassificationError
 from app.paypal import PayPalFormatError
 
 OID = "68af1e2c9b4d5a6f7c8d9e01"
 OTHER_OID = "68af1e2c9b4d5a6f7c8d9e02"
+USER_OID = "68af1e2c9b4d5a6f7c8d9e00"
 
 
 class FakeTemplates:
@@ -99,11 +102,21 @@ def client():
     """
     app = FastAPI()
     app.include_router(routes.router)
+    app.dependency_overrides[current_user] = lambda: SimpleNamespace(id=USER_OID)
     return TestClient(app)
 
 
 def context_of(templates, name):
     return next(ctx for template, ctx in templates.rendered if template == name)
+
+
+@pytest.fixture
+def public_client():
+    """The unauthenticated router, with a session so login can set one."""
+    app = FastAPI()
+    app.include_router(routes.public_router)
+    app.add_middleware(SessionMiddleware, secret_key="test")
+    return TestClient(app, follow_redirects=False)
 
 
 # --- The shared layout --------------------------------------------------------
@@ -223,7 +236,7 @@ def test_correcting_a_category_redirects_back_to_the_queue(monkeypatch, client):
 
     assert reply.status_code == 303
     assert reply.headers["location"] == "/review"
-    assert correct.calls[0][0] == (OID, "Food & Drink", "Groceries")
+    assert correct.calls[0][0] == (USER_OID, OID, "Food & Drink", "Groceries")
 
 
 def test_a_correction_the_service_will_not_accept_is_a_422(monkeypatch, client):
@@ -344,7 +357,7 @@ def test_a_finding_is_dismissed_on_its_own_facts(monkeypatch, client):
     ).json()
 
     assert body == {"status": "success", "stored": True}
-    assert dismiss.calls[0][0] == ("drift", "Cafés & Snacks", "2026-07")
+    assert dismiss.calls[0][0] == (USER_OID, "drift", "Cafés & Snacks", "2026-07")
 
 
 def test_a_finding_about_the_whole_ledger_needs_no_subject(monkeypatch, client):
@@ -357,7 +370,7 @@ def test_a_finding_about_the_whole_ledger_needs_no_subject(monkeypatch, client):
 
     client.post("/api/patterns/dismiss", data={"kind": "total_drift"})
 
-    assert dismiss.calls[0][0] == ("total_drift", "", "")
+    assert dismiss.calls[0][0] == (USER_OID, "total_drift", "", "")
 
 
 def test_a_dismissal_the_service_rejects_is_a_422(monkeypatch, client):
@@ -587,7 +600,7 @@ def test_an_empty_decision_hands_the_transaction_back_to_the_suggester(
         f"/api/trips/{OID}/assign", data={"transaction_id": OTHER_OID, "decision": ""}
     )
 
-    assert clear.calls[0][0] == (OID, OTHER_OID)
+    assert clear.calls[0][0] == (USER_OID, OID, OTHER_OID)
 
 
 def test_a_share_is_passed_through_for_a_booking_somebody_else_was_on(
@@ -630,7 +643,7 @@ def test_the_split_is_one_number_for_the_whole_trip(monkeypatch, client):
     body = client.post(f"/api/trips/{OID}/split", data={"ways": "2"}).json()
 
     assert body == {"status": "success", "total": -406.20}
-    assert split.calls[0][0] == (OID, 2)
+    assert split.calls[0][0] == (USER_OID, OID, 2)
 
 
 def test_a_split_the_service_rejects_is_a_422(monkeypatch, client):
@@ -656,7 +669,7 @@ def test_the_selected_transactions_are_taken_as_given(monkeypatch, client):
     ).json()
 
     assert body == {"status": "success", "assigned": 2}
-    assert assign_many.calls[0][0][1] == [OTHER_OID, OID]
+    assert assign_many.calls[0][0][2] == [OTHER_OID, OID]
 
 
 def test_searching_for_a_transaction_to_attach_by_hand(monkeypatch, client):
@@ -806,6 +819,7 @@ class FakeTransactionModel:
 
     hash = "hash"
     classification_source = "classification_source"
+    user_id = "user_id"
     found = []
 
     @classmethod
@@ -941,8 +955,10 @@ def upload(monkeypatch):
         found = []
 
     class FakeRule:
+        user_id = "user_id"
+
         @staticmethod
-        def find_all():
+        def find(*args, **kwargs):
             return FakeQuery([])
 
     monkeypatch.setattr(routes, "Transaction", Model)
@@ -1092,7 +1108,7 @@ def test_a_classification_failure_does_not_fail_the_import(monkeypatch):
         routes.ClassificationService, "classify", raising(RuntimeError("boom"))
     )
 
-    result = asyncio.run(routes._classify_import([SimpleNamespace(id=OID)]))
+    result = asyncio.run(routes._classify_import(USER_OID, [SimpleNamespace(id=OID)]))
 
     assert result["classification"]["status"] == "failed"
     assert "boom" in result["classification"]["detail"]
@@ -1110,7 +1126,7 @@ def test_a_missing_key_during_import_is_reported_as_unavailable(monkeypatch):
         routes.ClassificationService, "classify", raising(ClassificationError("no key"))
     )
 
-    result = asyncio.run(routes._classify_import([SimpleNamespace(id=OID)]))
+    result = asyncio.run(routes._classify_import(USER_OID, [SimpleNamespace(id=OID)]))
 
     assert result["classification"]["status"] == "unavailable"
 
@@ -1132,11 +1148,11 @@ def test_the_comparison_log_is_only_written_while_both_systems_run(monkeypatch):
 
     monkeypatch.setattr(routes.settings, "comparison_mode_enabled", True)
     monkeypatch.setattr(routes.settings, "rules_enabled", False)
-    asyncio.run(routes._classify_import([SimpleNamespace(id=OID)]))
+    asyncio.run(routes._classify_import(USER_OID, [SimpleNamespace(id=OID)]))
     assert written == []
 
     monkeypatch.setattr(routes.settings, "rules_enabled", True)
-    asyncio.run(routes._classify_import([SimpleNamespace(id=OID)]))
+    asyncio.run(routes._classify_import(USER_OID, [SimpleNamespace(id=OID)]))
     assert written == [1]
 
 
@@ -1153,7 +1169,7 @@ def test_nothing_is_persisted_while_the_rule_engine_is_in_charge(monkeypatch):
     monkeypatch.setattr(routes.settings, "classification_enabled", False)
     monkeypatch.setattr(routes, "apply", raising(AssertionError("must not write")))
 
-    result = asyncio.run(routes._classify_import([SimpleNamespace(id=OID)]))
+    result = asyncio.run(routes._classify_import(USER_OID, [SimpleNamespace(id=OID)]))
 
     assert result["classification"]["persisted"] == 0
 
@@ -1169,7 +1185,7 @@ def test_a_detected_trip_proposal_can_be_refused(monkeypatch, client):
     body = client.post(f"/api/trips/proposals/{OID}/dismiss").json()
 
     assert body == {"status": "success", "dismissed": True}
-    assert dismiss.calls[0][0] == (OID,)
+    assert dismiss.calls[0][0] == (USER_OID, OID)
 
 
 def test_refusing_a_proposal_detection_no_longer_makes_is_a_422(monkeypatch, client):
@@ -1233,7 +1249,7 @@ def test_a_classify_run_can_name_the_transactions_it_should_cover(
     The default is whatever is still awaiting classification; naming ids is
     how the backfill script and the review page re-run one line.
     """
-    transactions.found = [SimpleNamespace(id=OID)]
+    transactions.found = [SimpleNamespace(id=OID, user_id=USER_OID)]
     monkeypatch.setattr(routes.ClassificationService, "classify", returning(fake_run()))
 
     body = client.post("/api/classify", json=[OID]).json()
@@ -1339,4 +1355,76 @@ def test_a_statement_is_checked_for_duplicates_in_one_query(client, upload):
 
     assert client.post("/upload", files=csv_file()).json()["imported"] == 20
     assert len(queries) == 1
-    assert queries[0][0] == {"hash": {"$in": [f"h{n}" for n in range(20)]}}
+    assert queries[0][1] == {"hash": {"$in": [f"h{n}" for n in range(20)]}}
+
+
+# --- Signing up ---------------------------------------------------------------
+
+
+class FakeUser:
+    """Stands in for the ``User`` document in the signup tests."""
+
+    existing_username = None
+    username = None
+
+    def __init__(self, username, password_hash):
+        self.username = username
+        self.password_hash = password_hash
+        self.id = "new-user-id"
+
+    @classmethod
+    async def find_one(cls, *args, **kwargs):
+        if cls.existing_username is not None:
+            return SimpleNamespace(username=cls.existing_username)
+        return None
+
+    async def insert(self):
+        return self
+
+
+def test_signup_rejects_mismatched_passwords(monkeypatch, public_client):
+    """A typo in the confirmation field must not create an account."""
+    monkeypatch.setattr(routes, "User", FakeUser)
+
+    reply = public_client.post(
+        "/signup",
+        data={"username": "alice", "password": "a", "confirm_password": "b"},
+    )
+
+    assert reply.status_code == 400
+    assert "did not match" in reply.text
+    assert "session" not in public_client.cookies
+
+
+def test_signup_rejects_a_taken_username(monkeypatch, public_client):
+    """The friendlier error from routes.py, ahead of the database's own."""
+    FakeUser.existing_username = "alice"
+    monkeypatch.setattr(routes, "User", FakeUser)
+
+    reply = public_client.post(
+        "/signup",
+        data={"username": "alice", "password": "a", "confirm_password": "a"},
+    )
+
+    assert reply.status_code == 400
+    assert "already taken" in reply.text
+
+
+def test_signup_creates_an_account_and_signs_it_in(monkeypatch, public_client):
+    """A new username starts a session and lands on ``next``."""
+    FakeUser.existing_username = None
+    monkeypatch.setattr(routes, "User", FakeUser)
+
+    reply = public_client.post(
+        "/signup",
+        data={
+            "username": "alice",
+            "password": "a",
+            "confirm_password": "a",
+            "next": "/patterns",
+        },
+    )
+
+    assert reply.status_code == 303
+    assert reply.headers["location"] == "/patterns"
+    assert "session" in public_client.cookies

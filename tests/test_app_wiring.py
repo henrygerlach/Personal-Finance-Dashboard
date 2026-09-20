@@ -115,6 +115,7 @@ def test_every_document_model_is_registered(wiring):
         Transaction,
         Trip,
         TripAssignment,
+        User,
     )
 
     run(DatabaseManager().connect())
@@ -127,6 +128,7 @@ def test_every_document_model_is_registered(wiring):
         ComdirectBalanceSnapshot,
         PayPalRecord,
         RecurringOverride,
+        User,
         Trip,
         TripAssignment,
         DismissedTripProposal,

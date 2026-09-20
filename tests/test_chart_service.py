@@ -28,10 +28,13 @@ def run(coro):
     return asyncio.run(coro)
 
 
+USER_ID = "u" * 24
+
+
 @pytest.fixture
 def db(monkeypatch):
     transaction_model = document(
-        "Transaction", "date", "minor_category", "major_category"
+        "Transaction", "date", "minor_category", "major_category", "user_id"
     )
     snapshot_model = document("ComdirectBalanceSnapshot", "loaded_at")
     patch_services(
@@ -61,6 +64,7 @@ def tx(
         flow_type=flow,
         is_recurring=False,
         paypal_counterparty=None,
+        user_id=USER_ID,
     )
     defaults.update(extra)
     row = db.Transaction(**defaults)
@@ -90,7 +94,7 @@ def test_a_transfer_is_not_in_the_chart(db):
     tx(db, amount=-40.0)
     transfer(db)
 
-    data = run(ChartDataService.get_chart_data(year=2026))
+    data = run(ChartDataService.get_chart_data(USER_ID, year=2026))
 
     assert "Investments" not in data["categories"]
     assert sum(data["data"]["Groceries"]) == -40.0
@@ -101,7 +105,7 @@ def test_a_transfer_is_not_in_the_cashflow(db):
     tx(db, amount=-40.0)
     transfer(db)
 
-    assert run(ChartDataService.get_cashflow_data(year=2026))["total"] == -40.0
+    assert run(ChartDataService.get_cashflow_data(USER_ID, year=2026))["total"] == -40.0
 
 
 def test_a_transfer_is_not_in_the_drill_down(db):
@@ -113,7 +117,7 @@ def test_a_transfer_is_not_in_the_drill_down(db):
     tx(db, amount=-40.0)
     transfer(db)
 
-    detail = run(ChartDataService.get_transaction_detail(month="2026-07"))
+    detail = run(ChartDataService.get_transaction_detail(USER_ID, month="2026-07"))
 
     assert detail["count"] == 1
     assert detail["net"] == -40.0
@@ -130,7 +134,7 @@ def test_a_month_with_no_transactions_still_appears(db):
     tx(db, date="2026-01-10")
     tx(db, date="2026-03-10")
 
-    data = run(ChartDataService.get_chart_data())
+    data = run(ChartDataService.get_chart_data(USER_ID))
 
     assert data["months"] == ["2026-01", "2026-02", "2026-03"]
 
@@ -142,7 +146,7 @@ def test_asking_for_one_year_draws_all_twelve_months(db):
     """
     tx(db, date="2026-02-10")
 
-    data = run(ChartDataService.get_chart_data(year=2026))
+    data = run(ChartDataService.get_chart_data(USER_ID, year=2026))
 
     assert len(data["months"]) == 12
     assert data["months"][0] == "2026-01"
@@ -156,20 +160,20 @@ def test_the_available_years_come_from_the_whole_history(db):
     tx(db, date="2024-05-01")
     tx(db, date="2026-02-10")
 
-    data = run(ChartDataService.get_chart_data(year=2026))
+    data = run(ChartDataService.get_chart_data(USER_ID, year=2026))
 
     assert data["available_years"] == [2024, 2026]
 
 
 def test_an_empty_ledger_produces_an_empty_chart_rather_than_an_error(db):
     """A fresh install renders the dashboard before anything is uploaded."""
-    data = run(ChartDataService.get_chart_data())
+    data = run(ChartDataService.get_chart_data(USER_ID))
 
     assert data == {"months": [], "categories": [], "data": {}, "available_years": []}
 
 
 def test_the_cashflow_of_an_empty_ledger_is_zero(db):
-    assert run(ChartDataService.get_cashflow_data())["total"] == 0
+    assert run(ChartDataService.get_cashflow_data(USER_ID))["total"] == 0
 
 
 # --- Grouping -----------------------------------------------------------------
@@ -182,8 +186,8 @@ def test_the_chart_can_be_drawn_at_either_granularity(db):
     """
     tx(db, major="Food & Drink", minor="Groceries")
 
-    minor = run(ChartDataService.get_chart_data())
-    major = run(ChartDataService.get_chart_data(category_type="major"))
+    minor = run(ChartDataService.get_chart_data(USER_ID))
+    major = run(ChartDataService.get_chart_data(USER_ID, category_type="major"))
 
     assert minor["categories"] == ["Groceries"]
     assert major["categories"] == ["Food & Drink"]
@@ -196,14 +200,14 @@ def test_a_transaction_with_no_category_is_grouped_as_other(db):
     """
     tx(db, minor=None)
 
-    assert "Other" in run(ChartDataService.get_chart_data())["categories"]
+    assert "Other" in run(ChartDataService.get_chart_data(USER_ID))["categories"]
 
 
 def test_asking_for_some_categories_narrows_to_them(db):
     tx(db, minor="Groceries", amount=-40.0)
     tx(db, minor="Rent", amount=-900.0, major="Housing")
 
-    data = run(ChartDataService.get_chart_data(categories=["Rent"]))
+    data = run(ChartDataService.get_chart_data(USER_ID, categories=["Rent"]))
 
     assert data["categories"] == ["Rent"]
     assert sum(data["data"]["Rent"]) == -900.0
@@ -213,7 +217,7 @@ def test_a_year_filter_keeps_only_that_year(db):
     tx(db, date="2025-07-03", amount=-10.0)
     tx(db, date="2026-07-03", amount=-40.0)
 
-    data = run(ChartDataService.get_chart_data(year=2026))
+    data = run(ChartDataService.get_chart_data(USER_ID, year=2026))
 
     assert sum(data["data"]["Groceries"]) == -40.0
 
@@ -229,7 +233,7 @@ def test_a_month_is_the_month_and_not_a_day_more(db):
     tx(db, date="2026-07-31", amount=-10.0)
     tx(db, date="2026-08-01", amount=-900.0)
 
-    detail = run(ChartDataService.get_transaction_detail(month="2026-07"))
+    detail = run(ChartDataService.get_transaction_detail(USER_ID, month="2026-07"))
 
     assert detail["count"] == 1
     assert detail["net"] == -10.0
@@ -243,7 +247,7 @@ def test_december_rolls_into_the_next_year(db):
     tx(db, date="2026-12-15", amount=-10.0)
     tx(db, date="2027-01-02", amount=-900.0)
 
-    detail = run(ChartDataService.get_transaction_detail(month="2026-12"))
+    detail = run(ChartDataService.get_transaction_detail(USER_ID, month="2026-12"))
 
     assert detail["count"] == 1
 
@@ -251,7 +255,7 @@ def test_december_rolls_into_the_next_year(db):
 def test_a_month_that_is_not_a_month_is_refused(db):
     """The route validates the shape, and this is the check behind it."""
     with pytest.raises(ValueError, match="YYYY-MM"):
-        run(ChartDataService.get_transaction_detail(month="July"))
+        run(ChartDataService.get_transaction_detail(USER_ID, month="July"))
 
 
 def test_a_month_wins_over_a_year_because_it_is_more_specific(db):
@@ -262,7 +266,9 @@ def test_a_month_wins_over_a_year_because_it_is_more_specific(db):
     tx(db, date="2026-07-03", amount=-40.0)
     tx(db, date="2026-09-03", amount=-90.0)
 
-    detail = run(ChartDataService.get_transaction_detail(month="2026-07", year=2026))
+    detail = run(
+        ChartDataService.get_transaction_detail(USER_ID, month="2026-07", year=2026)
+    )
 
     assert detail["count"] == 1
 
@@ -272,7 +278,7 @@ def test_neither_a_month_nor_a_year_covers_all_of_history(db):
     tx(db, date="2024-07-03", amount=-40.0)
     tx(db, date="2026-09-03", amount=-90.0)
 
-    assert run(ChartDataService.get_transaction_detail())["count"] == 2
+    assert run(ChartDataService.get_transaction_detail(USER_ID))["count"] == 2
 
 
 # --- The two sides of a drill-down --------------------------------------------
@@ -287,7 +293,7 @@ def test_the_two_directions_come_back_separately(db):
     tx(db, amount=-40.0)
     tx(db, amount=25.0, minor="Groceries")
 
-    detail = run(ChartDataService.get_transaction_detail(month="2026-07"))
+    detail = run(ChartDataService.get_transaction_detail(USER_ID, month="2026-07"))
 
     assert detail["outgoing"]["count"] == 1
     assert detail["incoming"]["count"] == 1
@@ -299,7 +305,9 @@ def test_each_side_is_ranked_by_size(db):
     tx(db, amount=-10.0, booking_text="SMALL")
     tx(db, amount=-90.0, booking_text="BIG")
 
-    outgoing = run(ChartDataService.get_transaction_detail(month="2026-07"))["outgoing"]
+    outgoing = run(ChartDataService.get_transaction_detail(USER_ID, month="2026-07"))[
+        "outgoing"
+    ]
 
     assert [row["amount"] for row in outgoing["transactions"]] == [-90.0, -10.0]
 
@@ -312,9 +320,9 @@ def test_a_side_says_how_much_of_itself_it_is_not_showing(db):
     for index in range(5):
         tx(db, amount=-10.0 * (index + 1))
 
-    outgoing = run(ChartDataService.get_transaction_detail(month="2026-07", limit=2))[
-        "outgoing"
-    ]
+    outgoing = run(
+        ChartDataService.get_transaction_detail(USER_ID, month="2026-07", limit=2)
+    )["outgoing"]
 
     assert outgoing["count"] == 5
     assert outgoing["hidden_count"] == 3
@@ -326,7 +334,9 @@ def test_a_side_with_nothing_on_it_is_still_reported(db):
     """The panel renders both sides unconditionally."""
     tx(db, amount=-40.0)
 
-    incoming = run(ChartDataService.get_transaction_detail(month="2026-07"))["incoming"]
+    incoming = run(ChartDataService.get_transaction_detail(USER_ID, month="2026-07"))[
+        "incoming"
+    ]
 
     assert incoming == {
         "transactions": [],
@@ -348,7 +358,7 @@ def test_a_drill_down_can_name_several_categories_at_once(db):
 
     detail = run(
         ChartDataService.get_transaction_detail(
-            month="2026-07", categories=["Groceries", "Cafés & Snacks"]
+            USER_ID, month="2026-07", categories=["Groceries", "Cafés & Snacks"]
         )
     )
 
@@ -367,9 +377,9 @@ def test_the_recovered_paypal_payee_is_what_the_panel_names(db):
         paypal_counterparty="Spotify AB",
     )
 
-    row = run(ChartDataService.get_transaction_detail(month="2026-07"))["outgoing"][
-        "transactions"
-    ][0]
+    row = run(ChartDataService.get_transaction_detail(USER_ID, month="2026-07"))[
+        "outgoing"
+    ]["transactions"][0]
 
     assert row["merchant"] == "Spotify AB"
     assert row["booking_text"].startswith("PP.5189.PP")
@@ -379,9 +389,9 @@ def test_a_line_with_no_merchant_at_all_is_named_rather_than_blank(db):
     """A blank cell in a list of payments reads as a rendering fault."""
     tx(db, booking_text="")
 
-    row = run(ChartDataService.get_transaction_detail(month="2026-07"))["outgoing"][
-        "transactions"
-    ][0]
+    row = run(ChartDataService.get_transaction_detail(USER_ID, month="2026-07"))[
+        "outgoing"
+    ]["transactions"][0]
 
     assert row["merchant"] == "Unnamed payment"
 

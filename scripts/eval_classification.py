@@ -46,7 +46,7 @@ from app.classification.prompt import FEW_SHOT_EXAMPLES  # noqa: E402
 from app.classification.service import ClassificationService  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.database import db_manager  # noqa: E402
-from app.models import SOURCE_LEGACY_RULES, Transaction  # noqa: E402
+from app.models import SOURCE_LEGACY_RULES, Transaction, User  # noqa: E402
 from app.normalization import merchant_key, normalize_merchant  # noqa: E402
 
 #: Merchants the prompt already answers. A sampled transaction matching one of
@@ -108,6 +108,7 @@ def confusion(rows, level: str, limit: int) -> list[tuple[str, str, int]]:
 
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[1])
+    parser.add_argument("username", help="whose transactions to evaluate against")
     parser.add_argument("--model", help="model to evaluate")
     parser.add_argument("--size", type=int, default=300)
     parser.add_argument("--seed", type=int, default=42)
@@ -130,8 +131,14 @@ async def main() -> int:
 
     await db_manager.connect()
     try:
+        user = await User.find_one(User.username == args.username)
+        if user is None:
+            print(f"No user {args.username!r}.")
+            return 1
+
         population = await Transaction.find(
-            Transaction.classification_source == SOURCE_LEGACY_RULES
+            Transaction.user_id == user.id,
+            Transaction.classification_source == SOURCE_LEGACY_RULES,
         ).to_list()
 
         print(f"database             : {settings.database_name}")
@@ -187,7 +194,7 @@ async def main() -> int:
         )
         # The cache came out of these very transactions; leaving it on would
         # measure the cache and call the result model accuracy.
-        run = await service.classify(sample, use_cache=False)
+        run = await service.classify(user.id, sample, use_cache=False)
     finally:
         await db_manager.disconnect()
 

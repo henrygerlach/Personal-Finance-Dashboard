@@ -30,6 +30,8 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Iterable, Sequence
 
+from beanie import PydanticObjectId
+
 from app.categories import (
     MAJOR_INCOME,
     NEEDS_REVIEW,
@@ -169,7 +171,9 @@ class ClassificationRun:
         )
 
 
-async def lookup_merchant(name: str, direction: str) -> MerchantCategory | None:
+async def lookup_merchant(
+    user_id: PydanticObjectId, name: str, direction: str
+) -> MerchantCategory | None:
     """
     Find a cached category for a normalized merchant name and direction.
 
@@ -196,6 +200,7 @@ async def lookup_merchant(name: str, direction: str) -> MerchantCategory | None:
     for wanted in (direction, opposite(direction)):
         for key in keys:
             entry = await MerchantCategory.find_one(
+                MerchantCategory.user_id == user_id,
                 MerchantCategory.merchant_key == key,
                 MerchantCategory.direction == wanted,
             )
@@ -205,6 +210,7 @@ async def lookup_merchant(name: str, direction: str) -> MerchantCategory | None:
 
 
 async def remember_merchant(
+    user_id: PydanticObjectId,
     name: str,
     major: str,
     minor: str,
@@ -234,6 +240,7 @@ async def remember_merchant(
 
     key = merchant_key(name)
     entry = await MerchantCategory.find_one(
+        MerchantCategory.user_id == user_id,
         MerchantCategory.merchant_key == key,
         MerchantCategory.direction == direction,
     )
@@ -241,6 +248,7 @@ async def remember_merchant(
 
     if entry is None:
         await MerchantCategory(
+            user_id=user_id,
             merchant_key=key,
             display_name=name,
             direction=direction,
@@ -345,7 +353,9 @@ class ClassificationService:
         self._escalation_classifier = ClaudeClassifier(model=model)
         return self._escalation_classifier
 
-    async def _get_paypal_ledger(self) -> PayPalLedger | None:
+    async def _get_paypal_ledger(
+        self, user_id: PydanticObjectId
+    ) -> PayPalLedger | None:
         """
         The PayPal ledger, or None when no export has been imported.
 
@@ -357,8 +367,8 @@ class ClassificationService:
             return self._paypal_ledger
         self._paypal_ledger_loaded = True
         try:
-            if await has_records():
-                self._paypal_ledger = await load_ledger()
+            if await has_records(user_id):
+                self._paypal_ledger = await load_ledger(user_id)
         except Exception:  # pragma: no cover - the feature is optional
             # A missing collection or an unreachable database must not take an
             # import down: without a ledger the fallback still applies, which
@@ -368,7 +378,7 @@ class ClassificationService:
         return self._paypal_ledger
 
     async def _recover_paypal_payees(
-        self, transactions: Sequence[Transaction]
+        self, user_id: PydanticObjectId, transactions: Sequence[Transaction]
     ) -> dict[str, PayPalMatch]:
         """
         Look up the payee of every truncated PayPal line, by transaction id.
@@ -382,7 +392,7 @@ class ClassificationService:
         if not truncated:
             return {}
 
-        ledger = await self._get_paypal_ledger()
+        ledger = await self._get_paypal_ledger(user_id)
         if ledger is None:
             return {}
 
@@ -394,7 +404,10 @@ class ClassificationService:
         return matches
 
     async def classify(
-        self, transactions: Sequence[Transaction], use_cache: bool = True
+        self,
+        user_id: PydanticObjectId,
+        transactions: Sequence[Transaction],
+        use_cache: bool = True,
     ) -> ClassificationRun:
         """
         Classify transactions, consulting the cache before the API.
@@ -406,6 +419,7 @@ class ClassificationService:
         merchants and one request.
 
         Args:
+            user_id: Whose merchant cache to consult and write to.
             transactions: The transactions to classify. Not saved here — the
                 caller decides whether a result is written.
             use_cache: Set to False to send everything to the API. The
@@ -425,7 +439,7 @@ class ClassificationService:
         # lines. This happens before the names are folded together, so a payee
         # recovered here merges with the same merchant seen under its own name
         # elsewhere in the batch and is answered from the cache with it.
-        paypal_matches = await self._recover_paypal_payees(transactions)
+        paypal_matches = await self._recover_paypal_payees(user_id, transactions)
         for transaction_id, match in paypal_matches.items():
             raw_names[transaction_id] = normalize_merchant(match.counterparty)
         run.paypal_recovered = len(paypal_matches)
@@ -472,7 +486,9 @@ class ClassificationService:
             name = merchants[str(representative.id)]
 
             if use_cache:
-                entry = await lookup_merchant(name, direction_of(representative.amount))
+                entry = await lookup_merchant(
+                    user_id, name, direction_of(representative.amount)
+                )
                 # An entry learned from the other direction does not always
                 # carry over. Where it cannot, the group is asked about in its
                 # own right and the answer is remembered for *its* direction,
@@ -514,12 +530,12 @@ class ClassificationService:
             )
 
         if to_ask:
-            await self._ask_api(to_ask, by_key, merchants, run)
+            await self._ask_api(user_id, to_ask, by_key, merchants, run)
             # Step 5: everything the first model was unsure about gets a
             # second look from a stronger one, under the same rules. It runs
             # as its own pass rather than a retry inside the batch so its cost
             # and its effect stay separately visible.
-            await self._escalate(to_ask, by_key, merchants, run)
+            await self._escalate(user_id, to_ask, by_key, merchants, run)
 
         # Applied once, at the end, so it covers cache hits, API answers and
         # the PayPal fallback alike rather than being repeated per branch.
@@ -593,6 +609,7 @@ class ClassificationService:
 
     async def _ask_api(
         self,
+        user_id: PydanticObjectId,
         requests: list[ClassificationRequest],
         by_key: dict[str, list[Transaction]],
         merchants: dict[str, str],
@@ -611,7 +628,9 @@ class ClassificationService:
             if not group:
                 continue
             merchant = merchants.get(str(group[0].id), "")
-            decided = await self._accept(result, merchant, group[0].amount, run)
+            decided = await self._accept(
+                user_id, result, merchant, group[0].amount, run
+            )
             run.api_calls += 1
             for transaction in group:
                 run.classifications.append(
@@ -632,6 +651,7 @@ class ClassificationService:
 
     async def _escalate(
         self,
+        user_id: PydanticObjectId,
         requests: list[ClassificationRequest],
         by_key: dict[str, list[Transaction]],
         merchants: dict[str, str],
@@ -680,7 +700,7 @@ class ClassificationService:
                 continue
             merchant = merchants.get(str(group[0].id), "")
             decided = await self._accept(
-                result, merchant, group[0].amount, run, classifier=classifier
+                user_id, result, merchant, group[0].amount, run, classifier=classifier
             )
             if decided.needs_review:
                 # No better than the first answer; leave the original in
@@ -700,6 +720,7 @@ class ClassificationService:
 
     async def _accept(
         self,
+        user_id: PydanticObjectId,
         result: ClassificationResult,
         merchant: str,
         amount: float,
@@ -741,6 +762,7 @@ class ClassificationService:
         # that shop into a refund.
         if (major, minor) != REFUND_PAIR:
             await remember_merchant(
+                user_id,
                 merchant,
                 major,
                 minor,

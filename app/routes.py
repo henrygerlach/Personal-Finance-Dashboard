@@ -6,10 +6,20 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from app.auth import current_user, hash_password, verify_password
 from app.categories import CATEGORY_HIERARCHY as NEW_CATEGORY_HIERARCHY
 from app.categorizer import Categorizer
 from app.classification.client import ClassificationError
@@ -17,7 +27,7 @@ from app.classification.comparison import write_comparison
 from app.classification.service import ClassificationService, apply, report_lines
 from app.config import get_logger, settings
 from app.constants import CATEGORY_HIERARCHY
-from app.models import SOURCE_PENDING, CategoryRule, Transaction, object_id
+from app.models import SOURCE_PENDING, CategoryRule, Transaction, User, object_id
 from app.parser import Parser
 from app.paypal import PayPalFormatError, import_export
 from app.paypal.records import looks_like_export
@@ -35,8 +45,16 @@ from app.services import (
 
 logger = get_logger(__name__)
 
-router = APIRouter()
+#: Unauthenticated: the login form and the session it grants have to work
+#: without a user to depend on.
+public_router = APIRouter()
+#: Every other route. The dependency is declared here rather than on each
+#: handler so a route added later is protected by default; a handler that
+#: also needs the user's id still declares its own Depends(current_user) —
+#: FastAPI resolves a dependency once per request, so that costs nothing.
+router = APIRouter(dependencies=[Depends(current_user)])
 templates = Jinja2Templates(directory="app/templates")
+CurrentUser = Annotated[User, Depends(current_user)]
 
 # Exposed to every template: the frontend derives its category colour palette
 # from this hierarchy instead of maintaining a parallel list of hex values.
@@ -88,7 +106,7 @@ def get_templates() -> Jinja2Templates:
     return templates
 
 
-async def nav_counts() -> dict[str, int]:
+async def nav_counts(user_id) -> dict[str, int]:
     """
     The badge counts the navigation bar draws next to Review and Categorize.
 
@@ -98,9 +116,90 @@ async def nav_counts() -> dict[str, int]:
     nothing instead of failing, so the omission looked like an empty queue.
     """
     return {
-        "review_count": await ReviewService.count(),
-        "uncategorized_count": await CategorizationService.get_uncategorized_count(),
+        "review_count": await ReviewService.count(user_id),
+        "uncategorized_count": await CategorizationService.get_uncategorized_count(
+            user_id
+        ),
     }
+
+
+# ============================================================================
+# Authentication
+# ============================================================================
+
+
+@public_router.get("/login", response_class=HTMLResponse)
+async def login_page(
+    request: Request,
+    next: Annotated[str, Query()] = "/",
+    mode: Annotated[str, Query()] = "signin",
+) -> HTMLResponse:
+    """The sign-in form, or the account-creation form next to it."""
+    templates = get_templates()
+    return templates.TemplateResponse(
+        "login.html",
+        {"request": request, "next": next, "mode": mode, "error": None},
+    )
+
+
+@public_router.post("/login", response_class=HTMLResponse, response_model=None)
+async def login(
+    request: Request,
+    username: Annotated[str, Form()],
+    password: Annotated[str, Form()],
+    next: Annotated[str, Form()] = "/",
+) -> HTMLResponse | RedirectResponse:
+    """Check a password and start a session."""
+    user = await User.find_one(User.username == username)
+    if user is None or not verify_password(password, user.password_hash):
+        templates = get_templates()
+        return templates.TemplateResponse(
+            "login.html",
+            {
+                "request": request,
+                "next": next,
+                "mode": "signin",
+                "error": "Wrong username or password.",
+            },
+            status_code=401,
+        )
+    request.session["user_id"] = str(user.id)
+    return RedirectResponse(url=next or "/", status_code=303)
+
+
+@public_router.post("/signup", response_class=HTMLResponse, response_model=None)
+async def signup(
+    request: Request,
+    username: Annotated[str, Form()],
+    password: Annotated[str, Form()],
+    confirm_password: Annotated[str, Form()],
+    next: Annotated[str, Form()] = "/",
+) -> HTMLResponse | RedirectResponse:
+    """Create an account and start a session with it."""
+    templates = get_templates()
+
+    def rejected(error: str) -> HTMLResponse:
+        return templates.TemplateResponse(
+            "login.html",
+            {"request": request, "next": next, "mode": "signup", "error": error},
+            status_code=400,
+        )
+
+    if password != confirm_password:
+        return rejected("Passwords did not match.")
+    if await User.find_one(User.username == username) is not None:
+        return rejected(f"Username {username!r} is already taken.")
+
+    user = await User(username=username, password_hash=hash_password(password)).insert()
+    request.session["user_id"] = str(user.id)
+    return RedirectResponse(url=next or "/", status_code=303)
+
+
+@public_router.post("/logout")
+async def logout(request: Request) -> RedirectResponse:
+    """End the session."""
+    request.session.clear()
+    return RedirectResponse(url="/login", status_code=303)
 
 
 # ============================================================================
@@ -109,7 +208,7 @@ async def nav_counts() -> dict[str, int]:
 
 
 @router.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request) -> HTMLResponse:
+async def dashboard(request: Request, user: CurrentUser) -> HTMLResponse:
     """Render the dashboard page."""
     templates = get_templates()
     return templates.TemplateResponse(
@@ -118,7 +217,7 @@ async def dashboard(request: Request) -> HTMLResponse:
             "request": request,
             "title": "Dashboard",
             "active_path": "/",
-            **await nav_counts(),
+            **await nav_counts(user.id),
             "render_balance_section": (
                 ComdirectBalanceService.should_render_balance_section()
             ),
@@ -127,7 +226,7 @@ async def dashboard(request: Request) -> HTMLResponse:
 
 
 @router.get("/upload", response_class=HTMLResponse)
-async def upload_page(request: Request) -> HTMLResponse:
+async def upload_page(request: Request, user: CurrentUser) -> HTMLResponse:
     """Render the CSV upload page."""
     templates = get_templates()
     return templates.TemplateResponse(
@@ -136,7 +235,7 @@ async def upload_page(request: Request) -> HTMLResponse:
             "request": request,
             "title": "Upload",
             "active_path": "/upload",
-            **await nav_counts(),
+            **await nav_counts(user.id),
         },
     )
 
@@ -144,6 +243,7 @@ async def upload_page(request: Request) -> HTMLResponse:
 @router.get("/categorize", response_class=HTMLResponse)
 async def categorize_page(
     request: Request,
+    user: CurrentUser,
     skip: Annotated[int, Query(ge=0)] = 0,
 ) -> HTMLResponse:
     """
@@ -158,7 +258,9 @@ async def categorize_page(
             without writing a rule.
     """
     templates = get_templates()
-    transaction = await CategorizationService.get_uncategorized_transaction(skip=skip)
+    transaction = await CategorizationService.get_uncategorized_transaction(
+        user.id, skip=skip
+    )
 
     return templates.TemplateResponse(
         "categorize.html",
@@ -166,7 +268,7 @@ async def categorize_page(
             "request": request,
             "title": "Categorize",
             "active_path": "/categorize",
-            **await nav_counts(),
+            **await nav_counts(user.id),
             "transaction": transaction,
             "categories": CATEGORY_HIERARCHY,
             "skip": skip,
@@ -177,6 +279,7 @@ async def categorize_page(
 @router.get("/review", response_class=HTMLResponse)
 async def review_page(
     request: Request,
+    user: CurrentUser,
     skip: Annotated[int, Query(ge=0)] = 0,
 ) -> HTMLResponse:
     """
@@ -187,16 +290,16 @@ async def review_page(
     same way without an API call.
     """
     templates = get_templates()
-    transactions = await ReviewService.queue(limit=50, skip=skip)
+    transactions = await ReviewService.queue(user.id, limit=50, skip=skip)
     return templates.TemplateResponse(
         "review.html",
         {
             "request": request,
             "title": "Needs Review",
             "active_path": "/review",
-            **await nav_counts(),
+            **await nav_counts(user.id),
             "transactions": transactions,
-            "paypal": await ReviewService.paypal_context(transactions),
+            "paypal": await ReviewService.paypal_context(user.id, transactions),
             "categories": NEW_CATEGORY_HIERARCHY,
             "skip": skip,
         },
@@ -206,12 +309,15 @@ async def review_page(
 @router.post("/review/{transaction_id}")
 async def correct_category(
     transaction_id: str,
+    user: CurrentUser,
     major_category: str = Form(...),
     minor_category: str = Form(...),
 ) -> RedirectResponse:
     """Assign a category by hand and record it for the merchant."""
     try:
-        await ReviewService.correct(transaction_id, major_category, minor_category)
+        await ReviewService.correct(
+            user.id, transaction_id, major_category, minor_category
+        )
     except ValueError as error:
         # Covers both an unknown transaction and a category pair that does not
         # exist; either way there is nothing to save.
@@ -220,7 +326,7 @@ async def correct_category(
 
 
 @router.get("/recurring", response_class=HTMLResponse)
-async def recurring_page(request: Request) -> HTMLResponse:
+async def recurring_page(request: Request, user: CurrentUser) -> HTMLResponse:
     """
     Payments that repeat on a schedule.
 
@@ -234,16 +340,16 @@ async def recurring_page(request: Request) -> HTMLResponse:
             "request": request,
             "title": "Recurring",
             "active_path": "/recurring",
-            **await nav_counts(),
-            "overview": await RecurringService.overview(),
+            **await nav_counts(user.id),
+            "overview": await RecurringService.overview(user.id),
         },
     )
 
 
 @router.post("/api/recurring/detect")
-async def detect_recurring() -> dict:
+async def detect_recurring(user: CurrentUser) -> dict:
     """Re-run detection over the whole history and store the result."""
-    runs = await RecurringService.detect_and_store()
+    runs = await RecurringService.detect_and_store(user.id)
     return {
         "status": "success",
         "schedules": len(runs),
@@ -253,6 +359,7 @@ async def detect_recurring() -> dict:
 
 @router.post("/api/recurring/override")
 async def set_recurring_override(
+    user: CurrentUser,
     schedule_id: Annotated[str, Form()],
     decision: Annotated[str, Form()],
 ) -> dict:
@@ -269,7 +376,7 @@ async def set_recurring_override(
         decision: ``dismissed``, ``active`` or ``ended``.
     """
     try:
-        stored = await RecurringService.set_override(schedule_id, decision)
+        stored = await RecurringService.set_override(user.id, schedule_id, decision)
     except ValueError as error:
         # Covers an unknown decision and a schedule that detection no longer
         # produces; neither is something to store.
@@ -279,11 +386,12 @@ async def set_recurring_override(
 
 @router.post("/api/recurring/override/clear")
 async def clear_recurring_override(
+    user: CurrentUser,
     schedule_id: Annotated[str, Form()],
 ) -> dict:
     """Hand one schedule back to the detector."""
     try:
-        cleared = await RecurringService.clear_override(schedule_id)
+        cleared = await RecurringService.clear_override(user.id, schedule_id)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error))
     return {"status": "success", "cleared": cleared}
@@ -295,7 +403,7 @@ async def clear_recurring_override(
 
 
 @router.get("/patterns", response_class=HTMLResponse)
-async def patterns_page(request: Request) -> HTMLResponse:
+async def patterns_page(request: Request, user: CurrentUser) -> HTMLResponse:
     """
     What changed in the spending, and what reliably does not.
 
@@ -311,14 +419,15 @@ async def patterns_page(request: Request) -> HTMLResponse:
             "request": request,
             "title": "Patterns",
             "active_path": "/patterns",
-            **await nav_counts(),
-            "overview": await PatternService.overview(),
+            **await nav_counts(user.id),
+            "overview": await PatternService.overview(user.id),
         },
     )
 
 
 @router.post("/api/patterns/dismiss")
 async def dismiss_pattern(
+    user: CurrentUser,
     kind: Annotated[str, Form()],
     subject: Annotated[str, Form()] = "",
     month: Annotated[str, Form()] = "",
@@ -338,7 +447,7 @@ async def dismiss_pattern(
         month: The month it concerns; empty where it concerns no single one.
     """
     try:
-        stored = await PatternService.dismiss(kind, subject, month)
+        stored = await PatternService.dismiss(user.id, kind, subject, month)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error))
     return {"status": "success", "stored": stored}
@@ -346,6 +455,7 @@ async def dismiss_pattern(
 
 @router.post("/api/patterns/restore")
 async def restore_pattern(
+    user: CurrentUser,
     kind: Annotated[str, Form()],
     subject: Annotated[str, Form()] = "",
     month: Annotated[str, Form()] = "",
@@ -353,12 +463,12 @@ async def restore_pattern(
     """Hand one dismissed finding back to the page."""
     return {
         "status": "success",
-        "restored": await PatternService.restore(kind, subject, month),
+        "restored": await PatternService.restore(user.id, kind, subject, month),
     }
 
 
 @router.get("/merchants", response_class=HTMLResponse)
-async def merchants_page(request: Request) -> HTMLResponse:
+async def merchants_page(request: Request, user: CurrentUser) -> HTMLResponse:
     """
     Who actually gets the money, and how few of them there are.
 
@@ -376,8 +486,8 @@ async def merchants_page(request: Request) -> HTMLResponse:
             "request": request,
             "title": "Merchants",
             "active_path": "/merchants",
-            **await nav_counts(),
-            "overview": await MerchantService.overview(),
+            **await nav_counts(user.id),
+            "overview": await MerchantService.overview(user.id),
         },
     )
 
@@ -412,7 +522,7 @@ def _trip_budget(value: str | None) -> float | None:
 
 
 @router.get("/trips", response_class=HTMLResponse)
-async def trips_page(request: Request) -> HTMLResponse:
+async def trips_page(request: Request, user: CurrentUser) -> HTMLResponse:
     """
     Every trip, and what it cost.
 
@@ -427,18 +537,19 @@ async def trips_page(request: Request) -> HTMLResponse:
             "request": request,
             "title": "Trips",
             "active_path": "/trips",
-            **await nav_counts(),
-            "overview": await TripService.overview(),
+            **await nav_counts(user.id),
+            "overview": await TripService.overview(user.id),
             # Detection runs on every load rather than on a button: a
             # proposal is worthless once acted on, and the alternative is a
             # stale list that has to be refreshed by hand.
-            "found": await TripService.proposals(),
+            "found": await TripService.proposals(user.id),
         },
     )
 
 
 @router.post("/trips")
 async def create_trip(
+    user: CurrentUser,
     name: Annotated[str, Form()],
     start_date: Annotated[str, Form()],
     end_date: Annotated[str, Form()],
@@ -449,6 +560,7 @@ async def create_trip(
     """Create a trip and go straight to it, where the review queue is."""
     try:
         trip = await TripService.create(
+            user.id,
             name=name,
             start_date=_trip_day(start_date, "Start date"),
             end_date=_trip_day(end_date, "End date"),
@@ -462,7 +574,7 @@ async def create_trip(
 
 
 @router.post("/api/trips/proposals/{anchor_id}/dismiss")
-async def dismiss_trip_proposal(anchor_id: str) -> dict:
+async def dismiss_trip_proposal(anchor_id: str, user: CurrentUser) -> dict:
     """
     Refuse one detected trip, so it stops being proposed.
 
@@ -470,21 +582,21 @@ async def dismiss_trip_proposal(anchor_id: str) -> dict:
     flagged week of online shopping would come back after every upload.
     """
     try:
-        dismissed = await TripService.dismiss_proposal(anchor_id)
+        dismissed = await TripService.dismiss_proposal(user.id, anchor_id)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error))
     return {"status": "success", "dismissed": dismissed}
 
 
 @router.post("/api/trips/proposals/{anchor_id}/restore")
-async def restore_trip_proposal(anchor_id: str) -> dict:
+async def restore_trip_proposal(anchor_id: str, user: CurrentUser) -> dict:
     """Hand one refused proposal back to the detector."""
-    restored = await TripService.restore_proposal(anchor_id)
+    restored = await TripService.restore_proposal(user.id, anchor_id)
     return {"status": "success", "restored": restored}
 
 
 @router.get("/trips/{trip_id}", response_class=HTMLResponse)
-async def trip_page(request: Request, trip_id: str) -> HTMLResponse:
+async def trip_page(request: Request, trip_id: str, user: CurrentUser) -> HTMLResponse:
     """
     One trip: what it cost, what is assigned to it, and what it may be missing.
 
@@ -495,7 +607,7 @@ async def trip_page(request: Request, trip_id: str) -> HTMLResponse:
     """
     templates = get_templates()
     try:
-        trip = await TripService.detail(trip_id)
+        trip = await TripService.detail(user.id, trip_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Trip not found")
     return templates.TemplateResponse(
@@ -504,7 +616,7 @@ async def trip_page(request: Request, trip_id: str) -> HTMLResponse:
             "request": request,
             "title": trip["name"],
             "active_path": "/trips",
-            **await nav_counts(),
+            **await nav_counts(user.id),
             "trip": trip,
         },
     )
@@ -513,6 +625,7 @@ async def trip_page(request: Request, trip_id: str) -> HTMLResponse:
 @router.post("/trips/{trip_id}/edit")
 async def edit_trip(
     trip_id: str,
+    user: CurrentUser,
     name: Annotated[str, Form()],
     start_date: Annotated[str, Form()],
     end_date: Annotated[str, Form()],
@@ -528,6 +641,7 @@ async def edit_trip(
     """
     try:
         await TripService.update(
+            user.id,
             trip_id,
             name=name,
             start_date=_trip_day(start_date, "Start date"),
@@ -542,10 +656,10 @@ async def edit_trip(
 
 
 @router.post("/trips/{trip_id}/delete")
-async def delete_trip(trip_id: str) -> RedirectResponse:
+async def delete_trip(trip_id: str, user: CurrentUser) -> RedirectResponse:
     """Remove a trip and every decision made about it."""
     try:
-        await TripService.delete(trip_id)
+        await TripService.delete(user.id, trip_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Trip not found")
     return RedirectResponse(url="/trips", status_code=303)
@@ -559,6 +673,7 @@ async def delete_trip(trip_id: str) -> RedirectResponse:
 @router.post("/api/trips/{trip_id}/assign")
 async def assign_to_trip(
     trip_id: str,
+    user: CurrentUser,
     transaction_id: Annotated[str, Form()],
     decision: Annotated[str, Form()] = "",
     share: Annotated[float, Form()] = 1.0,
@@ -580,10 +695,10 @@ async def assign_to_trip(
     try:
         if decision:
             result = await TripService.assign(
-                trip_id, transaction_id, decision, share=share
+                user.id, trip_id, transaction_id, decision, share=share
             )
         else:
-            result = await TripService.clear(trip_id, transaction_id)
+            result = await TripService.clear(user.id, trip_id, transaction_id)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error))
     return {"status": "success", **result}
@@ -592,6 +707,7 @@ async def assign_to_trip(
 @router.post("/api/trips/{trip_id}/split")
 async def split_trip(
     trip_id: str,
+    user: CurrentUser,
     ways: Annotated[int, Form()],
 ) -> dict:
     """
@@ -609,7 +725,7 @@ async def split_trip(
         The trip's recomputed totals.
     """
     try:
-        result = await TripService.set_split(trip_id, ways)
+        result = await TripService.set_split(user.id, trip_id, ways)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error))
     return {"status": "success", **result}
@@ -618,6 +734,7 @@ async def split_trip(
 @router.post("/api/trips/{trip_id}/assign-selected")
 async def assign_selected_to_trip(
     trip_id: str,
+    user: CurrentUser,
     transaction_id: Annotated[list[str], Form()],
 ) -> dict:
     """
@@ -631,7 +748,7 @@ async def assign_selected_to_trip(
         transaction_id: Repeated, one per selected transaction.
     """
     try:
-        written = await TripService.assign_many(trip_id, transaction_id)
+        written = await TripService.assign_many(user.id, trip_id, transaction_id)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error))
     return {"status": "success", "assigned": written}
@@ -640,6 +757,7 @@ async def assign_selected_to_trip(
 @router.get("/api/trips/{trip_id}/search")
 async def search_trip_transactions(
     trip_id: str,
+    user: CurrentUser,
     q: Annotated[str, Query(min_length=2)],
 ) -> dict:
     """
@@ -650,7 +768,7 @@ async def search_trip_transactions(
     friend settling up long after the settlement tail closed.
     """
     try:
-        results = await TripService.search(trip_id, q)
+        results = await TripService.search(user.id, trip_id, q)
     except ValueError:
         raise HTTPException(status_code=404, detail="Trip not found")
     return {"status": "success", "query": q, "results": results}
@@ -659,11 +777,16 @@ async def search_trip_transactions(
 @router.get("/rules", response_class=HTMLResponse)
 async def rules_page(
     request: Request,
+    user: CurrentUser,
     search: Annotated[str | None, Query()] = None,
 ) -> HTMLResponse:
     """Render the rules management page with search and category grouping."""
     templates = get_templates()
-    rules = await CategoryRule.find_all().sort("major", "minor", "substring").to_list()
+    rules = (
+        await CategoryRule.find(CategoryRule.user_id == user.id)
+        .sort("major", "minor", "substring")
+        .to_list()
+    )
 
     search_value = (search or "").strip().lower()
     if search_value:
@@ -686,7 +809,7 @@ async def rules_page(
             "request": request,
             "title": "Rules",
             "active_path": "/rules",
-            **await nav_counts(),
+            **await nav_counts(user.id),
             "rules": rules,
             "grouped_rules": grouped_rules,
             "search": search or "",
@@ -696,21 +819,21 @@ async def rules_page(
 
 
 @router.post("/rules/{rule_id}/delete", response_class=RedirectResponse)
-async def delete_rule(rule_id: str) -> RedirectResponse:
+async def delete_rule(rule_id: str, user: CurrentUser) -> RedirectResponse:
     """Delete a categorization rule by id and recompute transaction categories."""
     try:
         rule = await CategoryRule.get(object_id(rule_id))
     except ValueError:
         rule = None
-    if not rule:
+    if not rule or rule.user_id != user.id:
         raise HTTPException(status_code=404, detail="Rule not found")
 
     await rule.delete()
     logger.info(f"Deleted rule: {rule_id}")
 
-    remaining_rules = await CategoryRule.find_all().to_list()
+    remaining_rules = await CategoryRule.find(CategoryRule.user_id == user.id).to_list()
     categorizer = Categorizer(rules=remaining_rules)
-    await CategorizationService.recompute_all_categories(categorizer)
+    await CategorizationService.recompute_all_categories(user.id, categorizer)
 
     return RedirectResponse(url="/rules", status_code=303)
 
@@ -722,6 +845,7 @@ async def delete_rule(rule_id: str) -> RedirectResponse:
 
 @router.get("/api/chart-data")
 async def get_chart_data(
+    user: CurrentUser,
     year: Annotated[int | None, Query()] = None,
     categories: Annotated[list[str], Query()] = None,
     category_type: Annotated[str | None, Query()] = None,
@@ -737,6 +861,7 @@ async def get_chart_data(
         JSON with months, categories, data structure, and available years
     """
     return await ChartDataService.get_chart_data(
+        user.id,
         year=year,
         categories=categories or [],
         category_type=category_type,
@@ -745,6 +870,7 @@ async def get_chart_data(
 
 @router.get("/api/cashflow-data")
 async def get_cashflow_data(
+    user: CurrentUser,
     year: Annotated[int | None, Query()] = None,
 ) -> dict:
     """
@@ -757,11 +883,12 @@ async def get_cashflow_data(
     Returns:
         JSON with months, data values, total, and available years
     """
-    return await ChartDataService.get_cashflow_data(year=year)
+    return await ChartDataService.get_cashflow_data(user.id, year=year)
 
 
 @router.get("/api/transaction-detail")
 async def get_transaction_detail(
+    user: CurrentUser,
     month: Annotated[str | None, Query(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")] = None,
     year: Annotated[int | None, Query()] = None,
     categories: Annotated[list[str] | None, Query()] = None,
@@ -795,6 +922,7 @@ async def get_transaction_detail(
         outgoing side
     """
     return await ChartDataService.get_transaction_detail(
+        user.id,
         month=month,
         year=year,
         categories=categories,
@@ -816,6 +944,7 @@ async def get_account_balances() -> dict:
 
 @router.post("/api/classify")
 async def classify_transactions(
+    user: CurrentUser,
     transaction_ids: list[str] | None = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 25,
     persist: Annotated[bool, Query()] = False,
@@ -851,11 +980,14 @@ async def classify_transactions(
                 transaction = await Transaction.get(object_id(tid))
             except ValueError:
                 continue
-            if transaction is not None:
+            if transaction is not None and transaction.user_id == user.id:
                 transactions.append(transaction)
     else:
         transactions = await (
-            Transaction.find(Transaction.classification_source == SOURCE_PENDING)
+            Transaction.find(
+                Transaction.user_id == user.id,
+                Transaction.classification_source == SOURCE_PENDING,
+            )
             .sort("-date")
             .limit(limit)
             .to_list()
@@ -865,7 +997,9 @@ async def classify_transactions(
         return {"status": "empty", "classified": 0, "results": []}
 
     try:
-        run = await ClassificationService().classify(transactions, use_cache=use_cache)
+        run = await ClassificationService().classify(
+            user.id, transactions, use_cache=use_cache
+        )
     except ClassificationError as error:
         raise HTTPException(status_code=503, detail=str(error))
 
@@ -907,7 +1041,7 @@ async def classify_transactions(
 
 
 @router.post("/upload")
-async def upload_csv(files: list[UploadFile] = File(...)) -> dict:
+async def upload_csv(user: CurrentUser, files: list[UploadFile] = File(...)) -> dict:
     """
     Upload and process CSV files.
 
@@ -931,7 +1065,7 @@ async def upload_csv(files: list[UploadFile] = File(...)) -> dict:
             )
 
     # Load existing rules
-    rules = await CategoryRule.find_all().to_list()
+    rules = await CategoryRule.find(CategoryRule.user_id == user.id).to_list()
     parser = Parser(rules=rules)
 
     imported_total = 0
@@ -949,7 +1083,7 @@ async def upload_csv(files: list[UploadFile] = File(...)) -> dict:
             # here means one upload control for both, and the classifier picks
             # the payees up on the next import. See app.paypal.
             if looks_like_export(contents):
-                result = await import_export(contents)
+                result = await import_export(user.id, contents)
                 paypal_rows += result.added
                 file_results.append(
                     {
@@ -974,7 +1108,8 @@ async def upload_csv(files: list[UploadFile] = File(...)) -> dict:
             known = {
                 row.hash
                 for row in await Transaction.find(
-                    {"hash": {"$in": [t.hash for t in transactions]}}
+                    Transaction.user_id == user.id,
+                    {"hash": {"$in": [t.hash for t in transactions]}},
                 ).to_list()
             }
 
@@ -988,6 +1123,7 @@ async def upload_csv(files: list[UploadFile] = File(...)) -> dict:
                     file_skipped += 1
                     continue
                 known.add(transaction.hash)
+                transaction.user_id = user.id
                 await transaction.insert()
                 imported_new.append(transaction)
                 file_imported += 1
@@ -1027,12 +1163,12 @@ async def upload_csv(files: list[UploadFile] = File(...)) -> dict:
         result["paypal_rows"] = paypal_rows
 
     if imported_new:
-        result.update(await _classify_import(imported_new))
+        result.update(await _classify_import(user.id, imported_new))
 
     return result
 
 
-async def _classify_import(transactions: list[Transaction]) -> dict:
+async def _classify_import(user_id, transactions: list[Transaction]) -> dict:
     """
     Run the classifier over freshly imported transactions.
 
@@ -1047,7 +1183,7 @@ async def _classify_import(transactions: list[Transaction]) -> dict:
     """
     summary: dict = {}
     try:
-        run = await ClassificationService().classify(transactions)
+        run = await ClassificationService().classify(user_id, transactions)
     except ClassificationError as error:
         logger.warning("Import not classified: %s", error)
         return {"classification": {"status": "unavailable", "detail": str(error)}}
@@ -1082,6 +1218,7 @@ async def _classify_import(transactions: list[Transaction]) -> dict:
 
 @router.post("/categorize")
 async def save_categorize_rule(
+    user: CurrentUser,
     transaction_id: str = Form(...),
     substring: str = Form(...),
     major_category: str = Form(...),
@@ -1111,7 +1248,7 @@ async def save_categorize_rule(
         transaction = await Transaction.get(object_id(transaction_id))
     except ValueError:
         transaction = None
-    if not transaction:
+    if not transaction or transaction.user_id != user.id:
         raise HTTPException(status_code=404, detail="Transaction not found")
 
     # Process substring input
@@ -1137,6 +1274,7 @@ async def save_categorize_rule(
 
     # Create and save new rule
     new_rule = CategoryRule(
+        user_id=user.id,
         substring=substring_value,
         process=process_value,
         major=major_category,
@@ -1149,9 +1287,10 @@ async def save_categorize_rule(
     )
 
     # Recompute categories for transactions that are still uncategorized
-    rules = await CategoryRule.find_all().to_list()
+    rules = await CategoryRule.find(CategoryRule.user_id == user.id).to_list()
     categorizer = Categorizer(rules=rules)
     await CategorizationService.recompute_all_categories(
+        user.id,
         categorizer,
         only_uncategorized=True,
     )

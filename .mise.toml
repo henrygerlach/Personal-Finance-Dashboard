@@ -99,6 +99,14 @@ run = "poetry run python scripts/import_paypal.py"
 description = "Re-file PayPal transactions whose payee the export recovered (--dry-run to preview)"
 run = "poetry run python scripts/resolve_paypal.py"
 
+[tasks.create-user]
+description = "Create a login for a family member or friend (--dry-run to check the username)"
+run = "poetry run python scripts/create_user.py"
+
+[tasks.assign-existing-data]
+description = "Give a username ownership of data written before login existed (--dry-run to preview)"
+run = "poetry run python scripts/assign_existing_data.py"
+
 [tasks.backup]
 description = "Dump the working database before anything that rewrites it"
 run = """

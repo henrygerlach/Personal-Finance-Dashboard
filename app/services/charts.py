@@ -6,10 +6,10 @@ What the dashboard's charts are drawn from.
 from datetime import datetime
 from typing import Optional
 
+from beanie import PydanticObjectId
+
 from app.config import get_logger
-from app.models import (
-    Transaction,
-)
+from app.models import Transaction
 from app.services.common import TOP_DETAIL_TRANSACTIONS, _summarize_side
 from app.utils import (
     generate_all_months_in_year,
@@ -21,14 +21,13 @@ from app.utils import (
 
 logger = get_logger(__name__)
 
-logger = get_logger(__name__)
-
 
 class ChartDataService:
     """Service for generating chart data."""
 
     @staticmethod
     async def get_chart_data(
+        user_id: PydanticObjectId,
         year: Optional[int] = None,
         categories: list[str] | None = None,
         category_type: str | None = None,
@@ -37,6 +36,7 @@ class ChartDataService:
         Get chart data aggregated by month and category.
 
         Args:
+            user_id: Whose ledger to draw the chart from.
             year: Filter by year (optional, defaults to all years)
             categories: List of minor categories to include (optional,
                 if empty includes all)
@@ -46,7 +46,9 @@ class ChartDataService:
             Dict with months, categories, data structure, and available years
         """
         # Get all transactions once and reuse for all derived views.
-        all_transactions = await Transaction.find_all().to_list()
+        all_transactions = await Transaction.find(
+            Transaction.user_id == user_id
+        ).to_list()
         transactions = all_transactions
 
         category_field = (
@@ -118,19 +120,24 @@ class ChartDataService:
         return response_data
 
     @staticmethod
-    async def get_cashflow_data(year: Optional[int] = None) -> dict:
+    async def get_cashflow_data(
+        user_id: PydanticObjectId, year: Optional[int] = None
+    ) -> dict:
         """
         Get net cashflow data aggregated by month.
         Excludes transfers, which move money without earning or spending it.
 
         Args:
+            user_id: Whose ledger to draw the chart from.
             year: Filter by year (optional, defaults to all years)
 
         Returns:
             Dict with months, data values, total, and available years
         """
         # Get all transactions
-        all_transactions = await Transaction.find_all().to_list()
+        all_transactions = await Transaction.find(
+            Transaction.user_id == user_id
+        ).to_list()
 
         # Store unfiltered transactions for determining month range
         unfiltered_transactions = [
@@ -218,6 +225,7 @@ class ChartDataService:
 
     @staticmethod
     async def get_transaction_detail(
+        user_id: PydanticObjectId,
         month: Optional[str] = None,
         year: Optional[int] = None,
         categories: Optional[list[str]] = None,
@@ -245,6 +253,7 @@ class ChartDataService:
         payments it offsets.
 
         Args:
+            user_id: Whose ledger to draw the detail from.
             month: Month key in ``YYYY-MM`` format, or None.
             year: Year to cover, or None for all of history. Ignored when
                 ``month`` is given.
@@ -269,10 +278,14 @@ class ChartDataService:
         # Reading the whole collection is only right when the whole of history
         # was asked for; any narrower scope is a range query.
         if start is None:
-            transactions = await Transaction.find_all().to_list()
+            transactions = await Transaction.find(
+                Transaction.user_id == user_id
+            ).to_list()
         else:
             transactions = await Transaction.find(
-                Transaction.date >= start, Transaction.date < end
+                Transaction.user_id == user_id,
+                Transaction.date >= start,
+                Transaction.date < end,
             ).to_list()
 
         wanted = set(categories) if categories else None

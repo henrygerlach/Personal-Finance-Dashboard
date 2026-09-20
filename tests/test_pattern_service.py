@@ -19,6 +19,8 @@ from app.patterns import KIND_DRIFT, Analysis, Pattern
 from app.services import PatternService, RecurringService
 from tests.fixtures.odm import patch_services
 
+USER_ID = "u" * 24
+
 
 def item(**extra):
     """One schedule as ``RecurringService.overview`` hands it over."""
@@ -85,7 +87,7 @@ def test_a_schedule_the_user_dismissed_is_not_handed_to_the_detector(monkeypatch
         },
     )
 
-    asyncio.run(PatternService.overview())
+    asyncio.run(PatternService.overview(USER_ID))
 
     assert [s.merchant for s in handed["schedules"]] == ["KEPT"]
 
@@ -93,23 +95,27 @@ def test_a_schedule_the_user_dismissed_is_not_handed_to_the_detector(monkeypatch
 def _patch_reads(monkeypatch, transactions=(), recurring=None, dismissals=()):
     """Stand in for every collection the overview reads."""
 
-    async def find_all():
+    async def find_all(*args, **kwargs):
         return list(transactions)
 
-    async def overview():
+    async def overview(user_id):
         return recurring or {"items": [], "ended": []}
 
-    async def no_trips():
+    async def no_trips(user_id):
         return {}
 
     patch_services(
         monkeypatch,
-        Transaction=SimpleNamespace(find_all=lambda: SimpleNamespace(to_list=find_all)),
+        Transaction=SimpleNamespace(
+            user_id="user_id",
+            find=lambda *a, **k: SimpleNamespace(to_list=find_all),
+        ),
     )
     patch_services(
         monkeypatch,
         PatternDismissal=SimpleNamespace(
-            find_all=lambda: SimpleNamespace(to_list=lambda: _resolve(dismissals))
+            user_id="user_id",
+            find=lambda *a, **k: SimpleNamespace(to_list=lambda: _resolve(dismissals)),
         ),
     )
     monkeypatch.setattr(RecurringService, "overview", overview)
@@ -205,7 +211,7 @@ def test_a_finding_that_was_put_away_is_kept_out_of_the_live_list(monkeypatch):
         ],
     )
 
-    overview = asyncio.run(PatternService.overview())
+    overview = asyncio.run(PatternService.overview(USER_ID))
 
     assert overview["count"] == 0
     assert [f["id"] for f in overview["dismissed"]] == ["drift|Groceries|2026-07"]
@@ -215,7 +221,7 @@ def test_a_dismissal_of_a_kind_that_does_not_exist_is_refused():
     """It could never match a finding, so it would sit in the collection
     forever doing nothing."""
     with pytest.raises(ValueError):
-        asyncio.run(PatternService.dismiss("not-a-kind", "", ""))
+        asyncio.run(PatternService.dismiss(USER_ID, "not-a-kind", "", ""))
 
 
 def test_the_findings_the_last_statement_produced_are_listed_first(monkeypatch):
@@ -267,6 +273,6 @@ def test_the_findings_the_last_statement_produced_are_listed_first(monkeypatch):
     )
     _patch_reads(monkeypatch)
 
-    overview = asyncio.run(PatternService.overview())
+    overview = asyncio.run(PatternService.overview(USER_ID))
 
     assert [f["label"] for f in overview["findings"]] == ["Groceries", "Coffee", "Rent"]

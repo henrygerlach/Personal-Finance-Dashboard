@@ -258,6 +258,18 @@ a {
   transform: scaleX(1);
 }
 
+.nav-logout {
+  display: contents;
+}
+
+.nav-logout .nav-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: var(--font-body);
+  cursor: pointer;
+}
+
 .nav-badge {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
@@ -415,6 +427,25 @@ a {
   gap: var(--gap-xl);
   max-width: 1600px;
   margin: 0 auto;
+}
+
+.auth-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--gap-xl) var(--gutter);
+}
+
+.auth-card {
+  width: min(360px, 100%);
+  background: var(--ink-1);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  padding: var(--gap-xl);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-lg);
 }
 
 .hero {
@@ -1031,6 +1062,7 @@ input[type="text"],
 input[type="search"],
 input[type="date"],
 input[type="number"],
+input[type="password"],
 select {
   font-family: var(--font-body);
   font-size: 0.95rem;
@@ -1051,6 +1083,7 @@ input[type="text"]:hover,
 input[type="search"]:hover,
 input[type="date"]:hover,
 input[type="number"]:hover,
+input[type="password"]:hover,
 select:hover {
   border-color: var(--rule-strong);
 }

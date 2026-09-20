@@ -20,6 +20,7 @@ from app.models import (
     Transaction,
     Trip,
     TripAssignment,
+    User,
 )
 
 logger = get_logger(__name__)
@@ -52,6 +53,7 @@ class DatabaseManager:
                 TripAssignment,
                 DismissedTripProposal,
                 PatternDismissal,
+                User,
             ],
         )
         logger.info("Database connection established and Beanie initialized")

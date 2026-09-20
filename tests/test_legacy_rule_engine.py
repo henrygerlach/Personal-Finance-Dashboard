@@ -23,11 +23,13 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app import routes
+from app.auth import current_user
 from app.categorizer import Categorizer
 from app.services import CategorizationService
 from tests.fixtures.odm import document, patch_services
 
 OID = "68af1e2c9b4d5a6f7c8d9e01"
+USER_OID = "68af1e2c9b4d5a6f7c8d9e00"
 
 
 def run(coro):
@@ -163,7 +165,7 @@ def test_a_filed_transaction_is_not_mistaken_for_the_default_state():
 
 @pytest.fixture
 def db(monkeypatch):
-    transaction_model = document("Transaction", "minor_category")
+    transaction_model = document("Transaction", "minor_category", "user_id")
     patch_services(monkeypatch, Transaction=transaction_model)
     return transaction_model
 
@@ -172,6 +174,7 @@ def stored(
     db, text="Auftraggeber: AMAZON", major="Other", minor="Uncategorized", **extra
 ):
     extra.setdefault("date", datetime(2026, 7, 3))
+    extra.setdefault("user_id", USER_OID)
     row = db(
         booking_text=text,
         process=None,
@@ -203,7 +206,7 @@ def test_a_recompute_saves_only_what_it_touched(db):
 
     run(
         CategorizationService.recompute_all_categories(
-            categorizer, only_uncategorized=True
+            USER_OID, categorizer, only_uncategorized=True
         )
     )
 
@@ -217,7 +220,7 @@ def test_a_full_recompute_touches_everything(db):
     stored(db)
     stored(db, major="Housing", minor="Rent")
 
-    run(CategorizationService.recompute_all_categories(categorizer))
+    run(CategorizationService.recompute_all_categories(USER_OID, categorizer))
 
     assert all(row.saved for row in db.rows)
 
@@ -227,7 +230,7 @@ def test_the_uncategorized_count_is_what_the_badge_shows(db):
     stored(db, minor="Uncategorized")
     stored(db, minor="Rent")
 
-    assert run(CategorizationService.get_uncategorized_count()) == 2
+    assert run(CategorizationService.get_uncategorized_count(USER_OID)) == 2
 
 
 def test_the_categorize_page_can_step_past_a_transaction(db):
@@ -238,22 +241,28 @@ def test_the_categorize_page_can_step_past_a_transaction(db):
     stored(db, text="FIRST", date=datetime(2026, 7, 1))
     stored(db, text="SECOND", date=datetime(2026, 7, 2))
 
-    first = run(CategorizationService.get_uncategorized_transaction())
-    second = run(CategorizationService.get_uncategorized_transaction(skip=1))
+    first = run(CategorizationService.get_uncategorized_transaction(USER_OID))
+    second = run(CategorizationService.get_uncategorized_transaction(USER_OID, skip=1))
 
     assert first.booking_text != second.booking_text
 
 
 def test_stepping_past_the_end_of_the_queue_returns_nothing(db):
     """The page renders an empty state rather than failing."""
-    assert run(CategorizationService.get_uncategorized_transaction(skip=5)) is None
+    assert (
+        run(CategorizationService.get_uncategorized_transaction(USER_OID, skip=5))
+        is None
+    )
 
 
 def test_a_negative_skip_is_treated_as_none(db):
     """A negative offset reaching the query is one nobody meant to write."""
     stored(db)
 
-    assert run(CategorizationService.get_uncategorized_transaction(skip=-3)) is not None
+    assert (
+        run(CategorizationService.get_uncategorized_transaction(USER_OID, skip=-3))
+        is not None
+    )
 
 
 # --- The pages ----------------------------------------------------------------
@@ -263,8 +272,9 @@ def test_a_negative_skip_is_treated_as_none(db):
 def client(monkeypatch):
     app = FastAPI()
     app.include_router(routes.router)
+    app.dependency_overrides[current_user] = lambda: SimpleNamespace(id=USER_OID)
 
-    async def count():
+    async def count(*args, **kwargs):
         return 0
 
     monkeypatch.setattr(routes.ReviewService, "count", count)
@@ -274,8 +284,8 @@ def client(monkeypatch):
 
 @pytest.fixture
 def rules_db(monkeypatch):
-    rule_model = document("CategoryRule", "id")
-    transaction_model = document("Transaction", "id")
+    rule_model = document("CategoryRule", "id", "user_id")
+    transaction_model = document("Transaction", "id", "user_id")
     monkeypatch.setattr(routes, "CategoryRule", rule_model)
     monkeypatch.setattr(routes, "Transaction", transaction_model)
     return SimpleNamespace(CategoryRule=rule_model, Transaction=transaction_model)
@@ -300,7 +310,11 @@ def stored_rule(
     db, substring="AMAZON", major="Shopping", minor="General Merchandise", process=None
 ):
     row = db.CategoryRule(
-        substring=substring, major=major, minor=minor, process=process
+        substring=substring,
+        major=major,
+        minor=minor,
+        process=process,
+        user_id=USER_OID,
     )
     db.CategoryRule.rows.append(row)
     return row
@@ -349,7 +363,7 @@ def test_deleting_a_rule_recomputes_what_it_had_categorized(
     row = stored_rule(rules_db)
     recomputed = []
 
-    async def recompute(categorizer, **kwargs):
+    async def recompute(user_id, categorizer, **kwargs):
         recomputed.append(categorizer)
 
     monkeypatch.setattr(
@@ -375,7 +389,9 @@ def test_saving_a_rule_requires_the_substring_to_be_in_the_booking_text(
     the transaction it was written for stays uncategorized.
     """
     rules_db.Transaction.rows.append(
-        rules_db.Transaction(id=OID, booking_text="Auftraggeber: AMAZON", process=None)
+        rules_db.Transaction(
+            id=OID, booking_text="Auftraggeber: AMAZON", process=None, user_id=USER_OID
+        )
     )
 
     reply = client.post(
@@ -401,11 +417,14 @@ def test_a_numeric_substring_means_the_first_n_words_of_the_line(
     """
     rules_db.Transaction.rows.append(
         rules_db.Transaction(
-            id=OID, booking_text="Auftraggeber: AMAZON EU SARL", process=None
+            id=OID,
+            booking_text="Auftraggeber: AMAZON EU SARL",
+            process=None,
+            user_id=USER_OID,
         )
     )
 
-    async def recompute(categorizer, **kwargs):
+    async def recompute(user_id, categorizer, **kwargs):
         return None
 
     monkeypatch.setattr(
@@ -429,7 +448,9 @@ def test_a_numeric_substring_means_the_first_n_words_of_the_line(
 def test_an_empty_substring_is_refused(client, rules_db):
     """A rule matching the empty string matches every transaction there is."""
     rules_db.Transaction.rows.append(
-        rules_db.Transaction(id=OID, booking_text="AMAZON", process=None)
+        rules_db.Transaction(
+            id=OID, booking_text="AMAZON", process=None, user_id=USER_OID
+        )
     )
 
     reply = client.post(
@@ -467,10 +488,12 @@ def test_the_transaction_s_own_process_can_be_borrowed_for_the_rule(
     having to know what Comdirect calls the transaction type.
     """
     rules_db.Transaction.rows.append(
-        rules_db.Transaction(id=OID, booking_text="AMAZON", process="Visa-Umsatz")
+        rules_db.Transaction(
+            id=OID, booking_text="AMAZON", process="Visa-Umsatz", user_id=USER_OID
+        )
     )
 
-    async def recompute(categorizer, **kwargs):
+    async def recompute(user_id, categorizer, **kwargs):
         return None
 
     monkeypatch.setattr(
@@ -498,11 +521,13 @@ def test_a_new_rule_only_refiles_what_nobody_has_filed(client, rules_db, monkeyp
     is the one thing that would make the page unusable.
     """
     rules_db.Transaction.rows.append(
-        rules_db.Transaction(id=OID, booking_text="AMAZON", process=None)
+        rules_db.Transaction(
+            id=OID, booking_text="AMAZON", process=None, user_id=USER_OID
+        )
     )
     seen = {}
 
-    async def recompute(categorizer, **kwargs):
+    async def recompute(user_id, categorizer, **kwargs):
         seen.update(kwargs)
 
     monkeypatch.setattr(

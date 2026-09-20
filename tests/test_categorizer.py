@@ -114,6 +114,9 @@ def test_categorizer_uses_rule_order_when_rules_overlap():
     assert minor == "Groceries"
 
 
+USER_ID = "u" * 24
+
+
 def test_recompute_all_categories_only_updates_uncategorized(monkeypatch):
     """Only transactions that are still uncategorized should be updated."""
 
@@ -150,8 +153,10 @@ def test_recompute_all_categories_only_updates_uncategorized(monkeypatch):
             return self.transactions
 
     class DummyTransaction:
+        user_id = "user_id"
+
         @classmethod
-        def find_all(cls):
+        def find(cls, *args, **kwargs):
             return DummyQuery([already_categorized, uncategorized])
 
     patch_services(monkeypatch, Transaction=DummyTransaction)
@@ -169,6 +174,7 @@ def test_recompute_all_categories_only_updates_uncategorized(monkeypatch):
 
     asyncio.run(
         CategorizationService.recompute_all_categories(
+            USER_ID,
             categorizer,
             only_uncategorized=True,
         )

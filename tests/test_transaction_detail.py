@@ -39,6 +39,9 @@ def tx(tid="1", amount=-10.0, day=14, **extra):
     return SimpleNamespace(**defaults)
 
 
+USER_ID = "u" * 24
+
+
 class _DateField:
     """Stands in for the indexed ``date`` field inside a query expression."""
 
@@ -47,6 +50,18 @@ class _DateField:
 
     def __lt__(self, value):
         return ("lt", value)
+
+
+class _UserIdField:
+    """
+    Stands in for the ``user_id`` field inside a query expression.
+
+    Every row in these tests belongs to the same user, so the equality is
+    accepted here and left unenforced by the query below.
+    """
+
+    def __eq__(self, value):
+        return ("eq", value)
 
 
 def use_transactions(monkeypatch, transactions):
@@ -61,7 +76,7 @@ def use_transactions(monkeypatch, transactions):
             for operator, value in self.conditions:
                 if operator == "gte":
                     rows = [row for row in rows if row.date >= value]
-                else:
+                elif operator == "lt":
                     rows = [row for row in rows if row.date < value]
             return rows
 
@@ -69,6 +84,7 @@ def use_transactions(monkeypatch, transactions):
         monkeypatch,
         Transaction=SimpleNamespace(
             date=_DateField(),
+            user_id=_UserIdField(),
             find=lambda *conditions: Query(conditions),
             find_all=lambda: Query(()),
         ),
@@ -76,6 +92,7 @@ def use_transactions(monkeypatch, transactions):
 
 
 def detail(**kwargs):
+    kwargs.setdefault("user_id", USER_ID)
     return asyncio.run(ChartDataService.get_transaction_detail(**kwargs))
 
 

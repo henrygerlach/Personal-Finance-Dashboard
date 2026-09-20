@@ -44,11 +44,12 @@ from app.classification.service import (  # noqa: E402
 )
 from app.config import settings  # noqa: E402
 from app.database import db_manager  # noqa: E402
-from app.models import SOURCE_PENDING, Transaction  # noqa: E402
+from app.models import SOURCE_PENDING, Transaction, User  # noqa: E402
 
 
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[1])
+    parser.add_argument("username", help="whose transactions to repair")
     parser.add_argument(
         "--dry-run", action="store_true", help="report what would change"
     )
@@ -56,7 +57,12 @@ async def main() -> int:
 
     await db_manager.connect()
     try:
-        transactions = await Transaction.find_all().to_list()
+        user = await User.find_one(User.username == args.username)
+        if user is None:
+            print(f"No user {args.username!r}.")
+            return 1
+
+        transactions = await Transaction.find(Transaction.user_id == user.id).to_list()
 
         refunds = [
             (t, refund_target(t.major_category, t.minor_category, t.amount))

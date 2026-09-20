@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.config import settings  # noqa: E402
 from app.database import db_manager  # noqa: E402
-from app.models import Transaction  # noqa: E402
+from app.models import Transaction, User  # noqa: E402
 from app.normalization import (  # noqa: E402
     build_canonical_map,
     is_unresolvable_paypal,
@@ -43,11 +43,23 @@ async def main() -> int:
     parser.add_argument(
         "--months", type=int, default=12, help="how many months to break out"
     )
+    parser.add_argument(
+        "--username", help="only this user's transactions (default: everyone's)"
+    )
     args = parser.parse_args()
 
     await db_manager.connect()
     try:
-        transactions = await Transaction.find_all().to_list()
+        if args.username:
+            user = await User.find_one(User.username == args.username)
+            if user is None:
+                print(f"No user {args.username!r}.")
+                return 1
+            transactions = await Transaction.find(
+                Transaction.user_id == user.id
+            ).to_list()
+        else:
+            transactions = await Transaction.find_all().to_list()
     finally:
         await db_manager.disconnect()
 

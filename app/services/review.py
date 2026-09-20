@@ -3,6 +3,8 @@ The queue of transactions a person still has to decide.
 """
 
 
+from beanie import PydanticObjectId
+
 from app.categories import MINOR_NEEDS_REVIEW, flow_type_for, is_valid_pair
 from app.config import get_logger
 from app.models import (
@@ -14,17 +16,20 @@ from app.normalization import normalize_merchant
 
 logger = get_logger(__name__)
 
-logger = get_logger(__name__)
-
 
 class ReviewService:
     """The queue of transactions the classifier would not decide."""
 
     @staticmethod
-    async def queue(limit: int = 100, skip: int = 0) -> list[Transaction]:
+    async def queue(
+        user_id: PydanticObjectId, limit: int = 100, skip: int = 0
+    ) -> list[Transaction]:
         """Transactions awaiting a human decision, least confident first."""
         return await (
-            Transaction.find(Transaction.minor_category == MINOR_NEEDS_REVIEW)
+            Transaction.find(
+                Transaction.user_id == user_id,
+                Transaction.minor_category == MINOR_NEEDS_REVIEW,
+            )
             .sort("confidence", "-date")
             .skip(max(0, skip))
             .limit(limit)
@@ -32,13 +37,14 @@ class ReviewService:
         )
 
     @staticmethod
-    async def count() -> int:
+    async def count(user_id: PydanticObjectId) -> int:
         return await Transaction.find(
-            Transaction.minor_category == MINOR_NEEDS_REVIEW
+            Transaction.user_id == user_id,
+            Transaction.minor_category == MINOR_NEEDS_REVIEW,
         ).count()
 
     @staticmethod
-    async def paypal_context(transactions: list) -> dict:
+    async def paypal_context(user_id: PydanticObjectId, transactions: list) -> dict:
         """
         What PayPal knew about each of these transactions, by transaction id.
 
@@ -61,12 +67,12 @@ class ReviewService:
         if not by_code:
             return {}
 
-        found = await settlement_details(by_code)
+        found = await settlement_details(user_id, by_code)
         return {str(by_code[code].id): settlement for code, settlement in found.items()}
 
     @staticmethod
     async def correct(
-        transaction_id: str, major: str, minor: str
+        user_id: PydanticObjectId, transaction_id: str, major: str, minor: str
     ) -> tuple[Transaction, bool]:
         """
         File a transaction by hand and teach the merchant cache.
@@ -84,7 +90,7 @@ class ReviewService:
         from app.classification.service import direction_of, remember_merchant
 
         transaction = await Transaction.get(object_id(transaction_id))
-        if transaction is None:
+        if transaction is None or transaction.user_id != user_id:
             raise ValueError(f"No transaction {transaction_id}")
 
         # A hand correction is not coerced. Silently turning an invalid pair
@@ -109,6 +115,7 @@ class ReviewService:
             # payment *to* someone must not overwrite what was learned from
             # the payments received *from* them, which mean something else.
             await remember_merchant(
+                user_id,
                 merchant,
                 major,
                 minor,

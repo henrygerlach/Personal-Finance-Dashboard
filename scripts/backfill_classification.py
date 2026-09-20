@@ -37,7 +37,7 @@ from app.classification.service import (  # noqa: E402
 )
 from app.config import get_logger, settings  # noqa: E402
 from app.database import db_manager  # noqa: E402
-from app.models import SOURCE_PENDING, Transaction  # noqa: E402
+from app.models import SOURCE_PENDING, Transaction, User  # noqa: E402
 from app.normalization import (  # noqa: E402
     build_canonical_map,
     merchant_key,
@@ -47,11 +47,12 @@ from app.normalization import (  # noqa: E402
 logger = get_logger(__name__)
 
 
-async def pending_transactions(limit: int | None) -> list[Transaction]:
+async def pending_transactions(user_id, limit: int | None) -> list[Transaction]:
     """Transactions still holding a provisional category, oldest first."""
-    query = Transaction.find(Transaction.classification_source == SOURCE_PENDING).sort(
-        "date"
-    )
+    query = Transaction.find(
+        Transaction.user_id == user_id,
+        Transaction.classification_source == SOURCE_PENDING,
+    ).sort("date")
     if limit:
         query = query.limit(limit)
     return await query.to_list()
@@ -71,6 +72,7 @@ async def main() -> int:
         action="store_true",
         help="report the work without calling the API or writing",
     )
+    parser.add_argument("username", help="whose transactions to backfill")
     parser.add_argument("--limit", type=int, help="only take this many transactions")
     parser.add_argument(
         "--model", help="override the classification model for this run"
@@ -84,7 +86,12 @@ async def main() -> int:
 
     await db_manager.connect()
     try:
-        transactions = await pending_transactions(args.limit)
+        user = await User.find_one(User.username == args.username)
+        if user is None:
+            print(f"No user {args.username!r}.")
+            return 1
+
+        transactions = await pending_transactions(user.id, args.limit)
         print(f"database             : {settings.database_name}")
         print(f"pending transactions : {len(transactions)}")
 
@@ -111,7 +118,7 @@ async def main() -> int:
             service = ClassificationService(
                 escalate=not args.no_escalation,
             )
-            run = await service.classify(transactions)
+            run = await service.classify(user.id, transactions)
         except ClassificationError as error:
             print(f"\n{error}")
             return 2
@@ -124,7 +131,8 @@ async def main() -> int:
         print(f"written              : {written}")
 
         remaining = await Transaction.find(
-            Transaction.classification_source == SOURCE_PENDING
+            Transaction.user_id == user.id,
+            Transaction.classification_source == SOURCE_PENDING,
         ).count()
         print(f"still pending        : {remaining}")
         if remaining:

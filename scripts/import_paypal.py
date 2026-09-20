@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.config import get_logger, settings  # noqa: E402
 from app.database import db_manager  # noqa: E402
+from app.models import User  # noqa: E402
 from app.paypal import PayPalFormatError, load_ledger, parse_export  # noqa: E402
 from app.paypal.store import store_rows  # noqa: E402
 
@@ -60,6 +61,7 @@ def collect(paths: list[str]) -> list[Path]:
 
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("username", help="whose PayPal ledger this is")
     parser.add_argument("paths", nargs="+", help="CSV files or folders holding them")
     parser.add_argument(
         "--dry-run",
@@ -101,10 +103,15 @@ async def main() -> int:
 
     await db_manager.connect()
     try:
-        result = await store_rows(every_row)
+        user = await User.find_one(User.username == args.username)
+        if user is None:
+            print(f"No user {args.username!r}.")
+            return 1
+
+        result = await store_rows(user.id, every_row)
         print(f"\n{result.summary()}")
 
-        ledger = await load_ledger()
+        ledger = await load_ledger(user.id)
         named = [s for s in ledger.settlements if s.counterparty]
         print(
             f"Ledger now holds {len(ledger.settlements)} bank settlements, "

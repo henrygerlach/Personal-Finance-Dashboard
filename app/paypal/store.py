@@ -18,6 +18,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 
+from beanie import PydanticObjectId
+
 from app.config import get_logger
 from app.models import PayPalRecord
 from app.paypal.ledger import PayPalLedger, Settlement
@@ -45,7 +47,7 @@ class ImportResult:
         return text
 
 
-async def store_rows(rows: list[PayPalRow]) -> ImportResult:
+async def store_rows(user_id: PydanticObjectId, rows: list[PayPalRow]) -> ImportResult:
     """
     Add whatever is new, leave whatever is known.
 
@@ -71,7 +73,9 @@ async def store_rows(rows: list[PayPalRow]) -> ImportResult:
     codes = [row.code for row in rows]
     stored = {
         document.code: document
-        for document in await PayPalRecord.find({"code": {"$in": codes}}).to_list()
+        for document in await PayPalRecord.find(
+            PayPalRecord.user_id == user_id, {"code": {"$in": codes}}
+        ).to_list()
     }
     known = set(stored)
 
@@ -86,6 +90,7 @@ async def store_rows(rows: list[PayPalRow]) -> ImportResult:
         seen.add(row.code)
         fresh.append(
             PayPalRecord(
+                user_id=user_id,
                 code=row.code,
                 date=datetime(row.date.year, row.date.month, row.date.day),
                 kind=row.kind,
@@ -135,19 +140,21 @@ async def _fill_in_detail(document: PayPalRecord, row: PayPalRow) -> bool:
     return changed
 
 
-async def import_export(payload: bytes | str) -> ImportResult:
+async def import_export(
+    user_id: PydanticObjectId, payload: bytes | str
+) -> ImportResult:
     """Read one PayPal activity export and store whatever is new in it."""
-    return await store_rows(parse_export(payload))
+    return await store_rows(user_id, parse_export(payload))
 
 
-async def load_ledger(**options) -> PayPalLedger:
+async def load_ledger(user_id: PydanticObjectId, **options) -> PayPalLedger:
     """
     A ledger over every PayPal row stored so far.
 
     Options are passed to :class:`~app.paypal.ledger.PayPalLedger`, so a
     caller that wants a different settlement window can ask for one.
     """
-    documents = await PayPalRecord.find_all().to_list()
+    documents = await PayPalRecord.find(PayPalRecord.user_id == user_id).to_list()
     rows = [
         PayPalRow(
             code=document.code,
@@ -169,7 +176,9 @@ async def load_ledger(**options) -> PayPalLedger:
     return PayPalLedger(rows, **options)
 
 
-async def settlement_details(codes: Iterable[str]) -> dict[str, Settlement]:
+async def settlement_details(
+    user_id: PydanticObjectId, codes: Iterable[str]
+) -> dict[str, Settlement]:
     """
     What PayPal knew about each of these settlements, keyed by its code.
 
@@ -185,7 +194,7 @@ async def settlement_details(codes: Iterable[str]) -> dict[str, Settlement]:
     if not wanted:
         return {}
 
-    ledger = await load_ledger()
+    ledger = await load_ledger(user_id)
     found: dict[str, Settlement] = {}
     for code in wanted:
         settlement = ledger.settlement_for(code)
@@ -194,6 +203,6 @@ async def settlement_details(codes: Iterable[str]) -> dict[str, Settlement]:
     return found
 
 
-async def has_records() -> bool:
+async def has_records(user_id: PydanticObjectId) -> bool:
     """Whether any PayPal export has been imported yet."""
-    return await PayPalRecord.find_all().count() > 0
+    return await PayPalRecord.find(PayPalRecord.user_id == user_id).count() > 0

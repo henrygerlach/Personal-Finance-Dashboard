@@ -37,14 +37,16 @@ from app.classification.service import (  # noqa: E402
 )
 from app.config import get_logger, settings  # noqa: E402
 from app.database import db_manager  # noqa: E402
-from app.models import Transaction  # noqa: E402
+from app.models import Transaction, User  # noqa: E402
 from app.normalization import is_unresolvable_paypal  # noqa: E402
 from app.paypal import has_records, load_ledger  # noqa: E402
 
 logger = get_logger(__name__)
 
 
-async def truncated_paypal_transactions(limit: int | None) -> list[Transaction]:
+async def truncated_paypal_transactions(
+    user_id, limit: int | None
+) -> list[Transaction]:
     """
     Every PayPal line Comdirect truncated the payee out of, oldest first.
 
@@ -55,7 +57,9 @@ async def truncated_paypal_transactions(limit: int | None) -> list[Transaction]:
     """
     transactions = [
         transaction
-        async for transaction in Transaction.find_all().sort("date")
+        async for transaction in Transaction.find(Transaction.user_id == user_id).sort(
+            "date"
+        )
         if is_unresolvable_paypal(transaction.booking_text)
     ]
     return transactions[:limit] if limit else transactions
@@ -63,6 +67,7 @@ async def truncated_paypal_transactions(limit: int | None) -> list[Transaction]:
 
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[1])
+    parser.add_argument("username", help="whose transactions to resolve")
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -78,16 +83,21 @@ async def main() -> int:
 
     await db_manager.connect()
     try:
+        user = await User.find_one(User.username == args.username)
+        if user is None:
+            print(f"No user {args.username!r}.")
+            return 1
+
         print(f"database              : {settings.database_name}")
-        if not await has_records():
+        if not await has_records(user.id):
             print(
                 "\nNo PayPal export has been imported yet.\n"
                 "Run: python scripts/import_paypal.py <folder>"
             )
             return 1
 
-        ledger = await load_ledger()
-        transactions = await truncated_paypal_transactions(args.limit)
+        ledger = await load_ledger(user.id)
+        transactions = await truncated_paypal_transactions(user.id, args.limit)
         print(f"PayPal settlements    : {len(ledger.settlements)}")
         print(f"truncated PayPal lines: {len(transactions)}")
 
@@ -140,7 +150,7 @@ async def main() -> int:
                 escalate=not args.no_escalation,
                 paypal_ledger=ledger,
             )
-            run = await service.classify(matched)
+            run = await service.classify(user.id, matched)
         except ClassificationError as error:
             print(f"\n{error}")
             return 2

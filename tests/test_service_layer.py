@@ -34,6 +34,8 @@ from app.services import (
 )
 from tests.fixtures.odm import document, patch_services
 
+USER_ID = "u" * 24
+
 
 def run(coro):
     return asyncio.run(coro)
@@ -42,10 +44,16 @@ def run(coro):
 @pytest.fixture
 def db(monkeypatch):
     models = SimpleNamespace(
-        Transaction=document("Transaction", "id", "minor_category"),
-        RecurringOverride=document("RecurringOverride", "merchant_key", "period"),
-        PatternDismissal=document("PatternDismissal", "kind", "subject", "month"),
-        MerchantCategory=document("MerchantCategory", "merchant_key", "direction"),
+        Transaction=document("Transaction", "id", "user_id", "minor_category"),
+        RecurringOverride=document(
+            "RecurringOverride", "user_id", "merchant_key", "period"
+        ),
+        PatternDismissal=document(
+            "PatternDismissal", "user_id", "kind", "subject", "month"
+        ),
+        MerchantCategory=document(
+            "MerchantCategory", "user_id", "merchant_key", "direction"
+        ),
     )
     patch_services(
         monkeypatch,
@@ -61,6 +69,7 @@ def db(monkeypatch):
 
 def tx(db, date="2026-07-03", amount=-40.0, text="EDEKA", **extra):
     defaults = dict(
+        user_id=USER_ID,
         date=datetime.strptime(date, "%Y-%m-%d") if isinstance(date, str) else date,
         amount=amount,
         booking_text=text,
@@ -113,7 +122,7 @@ def test_a_correction_files_the_transaction_and_marks_it_as_the_user_s(db):
     row = tx(db, major_category="Uncategorized", minor_category="Needs Review")
 
     corrected, taught = run(
-        ReviewService.correct(str(row.id), "Food & Drink", "Groceries")
+        ReviewService.correct(USER_ID, str(row.id), "Food & Drink", "Groceries")
     )
 
     assert corrected.major_category == "Food & Drink"
@@ -130,7 +139,7 @@ def test_a_correction_teaches_the_merchant_cache(db):
     """
     row = tx(db, text="Auftraggeber: EDEKA")
 
-    run(ReviewService.correct(str(row.id), "Food & Drink", "Groceries"))
+    run(ReviewService.correct(USER_ID, str(row.id), "Food & Drink", "Groceries"))
 
     assert len(db.MerchantCategory.rows) == 1
     assert db.MerchantCategory.rows[0].source == SOURCE_USER
@@ -143,7 +152,11 @@ def test_a_correction_teaches_only_this_transaction_s_direction(db):
     """
     row = tx(db, text="MAX MUSTERMANN", amount=-50.0)
 
-    run(ReviewService.correct(str(row.id), "Transfers & Savings", "Person to Person"))
+    run(
+        ReviewService.correct(
+            USER_ID, str(row.id), "Transfers & Savings", "Person to Person"
+        )
+    )
 
     assert db.MerchantCategory.rows[0].direction == "out"
 
@@ -157,7 +170,7 @@ def test_a_pair_that_is_not_a_category_is_refused_rather_than_coerced(db):
     row = tx(db)
 
     with pytest.raises(ValueError, match="is not a category"):
-        run(ReviewService.correct(str(row.id), "Invented", "Nonsense"))
+        run(ReviewService.correct(USER_ID, str(row.id), "Invented", "Nonsense"))
 
     assert db.MerchantCategory.rows == []
     assert row.major_category == "Food & Drink"
@@ -165,7 +178,11 @@ def test_a_pair_that_is_not_a_category_is_refused_rather_than_coerced(db):
 
 def test_correcting_a_transaction_that_is_gone_raises(db):
     with pytest.raises(ValueError, match="No transaction"):
-        run(ReviewService.correct("68af1e2c9b4d5a6f7c8d9e01", "Housing", "Rent"))
+        run(
+            ReviewService.correct(
+                USER_ID, "68af1e2c9b4d5a6f7c8d9e01", "Housing", "Rent"
+            )
+        )
 
 
 def test_a_line_with_no_merchant_is_filed_without_teaching_anything(db):
@@ -176,7 +193,7 @@ def test_a_line_with_no_merchant_is_filed_without_teaching_anything(db):
     row = tx(db, text="PP.5189.PP . , Ihr Ei nkauf bei Ref.")
 
     _, taught = run(
-        ReviewService.correct(str(row.id), "Shopping", "General Merchandise")
+        ReviewService.correct(USER_ID, str(row.id), "Shopping", "General Merchandise")
     )
 
     assert taught is False
@@ -195,7 +212,11 @@ def test_the_queue_holds_the_least_confident_first(db):
     tx(db, minor_category="Needs Review", confidence=0.1, text="LEAST SURE")
     tx(db, minor_category="Groceries", confidence=0.99, text="FILED")
 
-    queue = run(ReviewService.queue())
+    queue = run(
+        ReviewService.queue(
+            USER_ID,
+        )
+    )
 
     assert [row.booking_text for row in queue] == ["LEAST SURE", "SURER"]
 
@@ -205,7 +226,14 @@ def test_the_queue_count_is_what_the_badge_shows(db):
     tx(db, minor_category="Needs Review")
     tx(db, minor_category="Groceries")
 
-    assert run(ReviewService.count()) == 2
+    assert (
+        run(
+            ReviewService.count(
+                USER_ID,
+            )
+        )
+        == 2
+    )
 
 
 def test_a_queue_of_ordinary_lines_asks_paypal_nothing(db):
@@ -213,7 +241,7 @@ def test_a_queue_of_ordinary_lines_asks_paypal_nothing(db):
     Most transactions carry no settlement code, and building a ledger for a
     screenful that has none is a read of the whole collection for nothing.
     """
-    assert run(ReviewService.paypal_context([tx(db)])) == {}
+    assert run(ReviewService.paypal_context(USER_ID, [tx(db)])) == {}
 
 
 # --- Recurring: detection and the flag ----------------------------------------
@@ -226,7 +254,11 @@ def test_detection_marks_the_transactions_of_a_schedule(db):
     """
     series(db)
 
-    runs = run(RecurringService.detect_and_store())
+    runs = run(
+        RecurringService.detect_and_store(
+            USER_ID,
+        )
+    )
 
     assert len(runs) == 1
     assert all(row.is_recurring for row in db.Transaction.rows)
@@ -239,7 +271,11 @@ def test_detection_clears_the_flag_from_what_is_no_longer_a_schedule(db):
     """
     row = tx(db, text="ONE OFF", is_recurring=True)
 
-    run(RecurringService.detect_and_store())
+    run(
+        RecurringService.detect_and_store(
+            USER_ID,
+        )
+    )
 
     assert row.is_recurring is False
 
@@ -253,6 +289,7 @@ def test_a_schedule_dismissed_by_hand_does_not_flag_its_transactions(db):
     rows = series(db)
     db.RecurringOverride.rows.append(
         db.RecurringOverride(
+            user_id=USER_ID,
             merchant_key="NETFLIX",
             display_name="NETFLIX",
             period="monthly",
@@ -262,7 +299,11 @@ def test_a_schedule_dismissed_by_hand_does_not_flag_its_transactions(db):
         )
     )
 
-    kept = run(RecurringService.detect_and_store())
+    kept = run(
+        RecurringService.detect_and_store(
+            USER_ID,
+        )
+    )
 
     assert kept == []
     assert not any(row.is_recurring for row in rows)
@@ -278,7 +319,11 @@ def test_the_overview_carries_a_schedule_at_its_monthly_equivalent(db):
     """
     series(db, merchant="NETFLIX", amount=-12.99, count=12)
 
-    overview = run(RecurringService.overview())
+    overview = run(
+        RecurringService.overview(
+            USER_ID,
+        )
+    )
 
     assert overview["outgoing"]
     assert overview["outgoing"][0]["monthly_equivalent"] == pytest.approx(
@@ -293,7 +338,11 @@ def test_now_is_the_end_of_the_imported_history_not_today(db):
     """
     series(db, count=12, start="2025-08-04")
 
-    overview = run(RecurringService.overview())
+    overview = run(
+        RecurringService.overview(
+            USER_ID,
+        )
+    )
 
     assert overview["outgoing"], "a schedule running to the end of the data is live"
     assert overview["days_behind"] >= 0
@@ -307,7 +356,11 @@ def test_a_schedule_that_stopped_long_ago_is_not_live(db):
     series(db, merchant="OLD SUB", count=6, start="2024-01-04")
     tx(db, date="2026-07-03", text="SOMETHING RECENT", amount=-5.0)
 
-    overview = run(RecurringService.overview())
+    overview = run(
+        RecurringService.overview(
+            USER_ID,
+        )
+    )
 
     assert not any(item["merchant"] == "OLD SUB" for item in overview["outgoing"])
     assert any(item["merchant"] == "OLD SUB" for item in overview["ended"])
@@ -318,7 +371,11 @@ def test_a_schedule_that_stopped_long_ago_is_not_live(db):
 
 def schedule_id(db):
     """The handle the page carries for the one detected run."""
-    overview = run(RecurringService.overview())
+    overview = run(
+        RecurringService.overview(
+            USER_ID,
+        )
+    )
     return overview["items"][0]["id"]
 
 
@@ -329,7 +386,9 @@ def test_a_decision_is_stored_against_the_facts_of_the_run(db):
     """
     series(db)
 
-    stored = run(RecurringService.set_override(schedule_id(db), OVERRIDE_ENDED))
+    stored = run(
+        RecurringService.set_override(USER_ID, schedule_id(db), OVERRIDE_ENDED)
+    )
 
     assert stored["decision"] == OVERRIDE_ENDED
     assert db.RecurringOverride.rows[0].period == "monthly"
@@ -343,11 +402,17 @@ def test_confirming_a_pair_stores_a_decision_like_any_other(db):
     findable — and a pair is below the detector's own threshold.
     """
     series(db, merchant="FITNESSSTUDIO", amount=-29.9, count=2)
-    overview = run(RecurringService.overview())
+    overview = run(
+        RecurringService.overview(
+            USER_ID,
+        )
+    )
     assert overview["candidate_count"] == 1
 
     stored = run(
-        RecurringService.set_override(overview["candidates"][0]["id"], OVERRIDE_ACTIVE)
+        RecurringService.set_override(
+            USER_ID, overview["candidates"][0]["id"], OVERRIDE_ACTIVE
+        )
     )
 
     assert stored["decision"] == OVERRIDE_ACTIVE
@@ -359,8 +424,8 @@ def test_deciding_twice_updates_the_one_decision(db):
     series(db)
     handle = schedule_id(db)
 
-    run(RecurringService.set_override(handle, OVERRIDE_ENDED))
-    run(RecurringService.set_override(handle, OVERRIDE_ACTIVE))
+    run(RecurringService.set_override(USER_ID, handle, OVERRIDE_ENDED))
+    run(RecurringService.set_override(USER_ID, handle, OVERRIDE_ACTIVE))
 
     assert len(db.RecurringOverride.rows) == 1
     assert db.RecurringOverride.rows[0].decision == OVERRIDE_ACTIVE
@@ -370,7 +435,7 @@ def test_an_unknown_decision_is_refused(db):
     series(db)
 
     with pytest.raises(ValueError, match="Unknown decision"):
-        run(RecurringService.set_override(schedule_id(db), "maybe"))
+        run(RecurringService.set_override(USER_ID, schedule_id(db), "maybe"))
 
 
 def test_a_decision_about_a_schedule_detection_no_longer_finds_is_refused(db):
@@ -381,29 +446,33 @@ def test_a_decision_about_a_schedule_detection_no_longer_finds_is_refused(db):
     series(db)
 
     with pytest.raises(ValueError, match="No detected schedule"):
-        run(RecurringService.set_override("nonexistent-monthly", OVERRIDE_ENDED))
+        run(
+            RecurringService.set_override(
+                USER_ID, "nonexistent-monthly", OVERRIDE_ENDED
+            )
+        )
 
 
 def test_a_decision_can_be_handed_back_to_the_detector(db):
     series(db)
     handle = schedule_id(db)
-    run(RecurringService.set_override(handle, OVERRIDE_ENDED))
+    run(RecurringService.set_override(USER_ID, handle, OVERRIDE_ENDED))
 
-    assert run(RecurringService.clear_override(handle)) is True
+    assert run(RecurringService.clear_override(USER_ID, handle)) is True
     assert db.RecurringOverride.rows == []
 
 
 def test_clearing_a_decision_that_was_never_made_says_so(db):
     series(db)
 
-    assert run(RecurringService.clear_override(schedule_id(db))) is False
+    assert run(RecurringService.clear_override(USER_ID, schedule_id(db))) is False
 
 
 def test_clearing_a_decision_about_an_unknown_schedule_is_refused(db):
     series(db)
 
     with pytest.raises(ValueError, match="No detected schedule"):
-        run(RecurringService.clear_override("nonexistent-monthly"))
+        run(RecurringService.clear_override(USER_ID, "nonexistent-monthly"))
 
 
 # --- Patterns: putting a finding away -----------------------------------------
@@ -414,7 +483,10 @@ def test_a_finding_is_dismissed_on_its_kind_subject_and_month(db):
     Findings are rebuilt from scratch on every page load, so the dismissal has
     to be keyed on what the finding is rather than on any handle.
     """
-    assert run(PatternService.dismiss("drift", "Cafés & Snacks", "2026-07")) is True
+    assert (
+        run(PatternService.dismiss(USER_ID, "drift", "Cafés & Snacks", "2026-07"))
+        is True
+    )
 
     stored = db.PatternDismissal.rows[0]
     assert (stored.kind, stored.subject, stored.month) == (
@@ -425,9 +497,12 @@ def test_a_finding_is_dismissed_on_its_kind_subject_and_month(db):
 
 
 def test_dismissing_the_same_finding_twice_stores_one_row(db):
-    run(PatternService.dismiss("drift", "Cafés & Snacks", "2026-07"))
+    run(PatternService.dismiss(USER_ID, "drift", "Cafés & Snacks", "2026-07"))
 
-    assert run(PatternService.dismiss("drift", "Cafés & Snacks", "2026-07")) is False
+    assert (
+        run(PatternService.dismiss(USER_ID, "drift", "Cafés & Snacks", "2026-07"))
+        is False
+    )
     assert len(db.PatternDismissal.rows) == 1
 
 
@@ -436,26 +511,35 @@ def test_the_same_subject_in_a_different_month_is_a_different_finding(db):
     The same category drifting again next year is a new claim about a new
     month, and is worth offering again.
     """
-    run(PatternService.dismiss("drift", "Cafés & Snacks", "2026-07"))
+    run(PatternService.dismiss(USER_ID, "drift", "Cafés & Snacks", "2026-07"))
 
-    assert run(PatternService.dismiss("drift", "Cafés & Snacks", "2027-07")) is True
+    assert (
+        run(PatternService.dismiss(USER_ID, "drift", "Cafés & Snacks", "2027-07"))
+        is True
+    )
 
 
 def test_a_kind_this_app_does_not_produce_is_refused(db):
     """A dismissal matching nothing would sit in the collection forever."""
     with pytest.raises(ValueError, match="is not a kind of pattern"):
-        run(PatternService.dismiss("invented", "", ""))
+        run(PatternService.dismiss(USER_ID, "invented", "", ""))
 
 
 def test_a_dismissed_finding_can_be_restored(db):
-    run(PatternService.dismiss("drift", "Cafés & Snacks", "2026-07"))
+    run(PatternService.dismiss(USER_ID, "drift", "Cafés & Snacks", "2026-07"))
 
-    assert run(PatternService.restore("drift", "Cafés & Snacks", "2026-07")) is True
+    assert (
+        run(PatternService.restore(USER_ID, "drift", "Cafés & Snacks", "2026-07"))
+        is True
+    )
     assert db.PatternDismissal.rows == []
 
 
 def test_restoring_a_finding_that_was_never_dismissed_says_so(db):
-    assert run(PatternService.restore("drift", "Cafés & Snacks", "2026-07")) is False
+    assert (
+        run(PatternService.restore(USER_ID, "drift", "Cafés & Snacks", "2026-07"))
+        is False
+    )
 
 
 # --- Merchants ----------------------------------------------------------------
@@ -463,7 +547,11 @@ def test_restoring_a_finding_that_was_never_dismissed_says_so(db):
 
 def test_the_merchants_page_of_an_empty_ledger_renders(db):
     """A fresh install reaches every page before anything is uploaded."""
-    overview = run(MerchantService.overview())
+    overview = run(
+        MerchantService.overview(
+            USER_ID,
+        )
+    )
 
     assert overview["months"] == []
     assert overview["first"] == ""
@@ -478,7 +566,11 @@ def test_a_merchant_row_carries_the_payments_behind_it(db):
         tx(db, date=f"2025-{month:02d}-05", amount=-40.0, text="EDEKA MUENCHEN")
     tx(db, date="2026-01-05", amount=-40.0, text="EDEKA MUENCHEN")
 
-    overview = run(MerchantService.overview())
+    overview = run(
+        MerchantService.overview(
+            USER_ID,
+        )
+    )
 
     assert overview["months"]
     assert overview["merchants"]

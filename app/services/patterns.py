@@ -5,6 +5,8 @@ What changed in the spending, and what reliably did not.
 
 from datetime import datetime
 
+from beanie import PydanticObjectId
+
 from app.categories import MINOR_NEEDS_REVIEW
 from app.config import get_logger
 from app.models import (
@@ -72,7 +74,7 @@ class PatternService:
         return schedules
 
     @staticmethod
-    async def _trip_names() -> dict[str, str]:
+    async def _trip_names(user_id: PydanticObjectId) -> dict[str, str]:
         """
         Which trip each transaction was assigned to, if any.
 
@@ -80,9 +82,13 @@ class PatternService:
         *not* the holiday, which is exactly the answer needed when deciding
         whether an expensive month was a holiday.
         """
-        trips = {str(trip.id): trip.name for trip in await Trip.find_all().to_list()}
+        trips = {
+            str(trip.id): trip.name
+            for trip in await Trip.find(Trip.user_id == user_id).to_list()
+        }
         assignments = await TripAssignment.find(
-            TripAssignment.decision == TRIP_INCLUDED
+            TripAssignment.user_id == user_id,
+            TripAssignment.decision == TRIP_INCLUDED,
         ).to_list()
         return {
             a.transaction_id: trips[a.trip_id]
@@ -119,7 +125,7 @@ class PatternService:
         }
 
     @staticmethod
-    async def overview() -> dict:
+    async def overview(user_id: PydanticObjectId) -> dict:
         """
         Everything the patterns page draws.
 
@@ -130,9 +136,11 @@ class PatternService:
         history that the user can look at, check against the transactions
         behind it, and put away.
         """
-        transactions = await Transaction.find_all().to_list()
-        recurring = await RecurringService.overview()
-        dismissals = await PatternDismissal.find_all().to_list()
+        transactions = await Transaction.find(Transaction.user_id == user_id).to_list()
+        recurring = await RecurringService.overview(user_id)
+        dismissals = await PatternDismissal.find(
+            PatternDismissal.user_id == user_id
+        ).to_list()
 
         # Dismissed runs are not schedules — the user has said so — and ended
         # ones still are: what they cost while they ran is what makes the
@@ -144,7 +152,7 @@ class PatternService:
                 if item["override"] != OVERRIDE_DISMISSED
             ]
         )
-        trip_of = await PatternService._trip_names()
+        trip_of = await PatternService._trip_names(user_id)
 
         analysis = analyse(transactions, schedules=schedules, trip_of=trip_of)
 
@@ -206,7 +214,9 @@ class PatternService:
         }
 
     @staticmethod
-    async def dismiss(kind: str, subject: str, month: str) -> bool:
+    async def dismiss(
+        user_id: PydanticObjectId, kind: str, subject: str, month: str
+    ) -> bool:
         """
         Put one finding away.
 
@@ -223,19 +233,25 @@ class PatternService:
             raise ValueError(f"{kind!r} is not a kind of pattern")
 
         existing = await PatternDismissal.find_one(
+            PatternDismissal.user_id == user_id,
             PatternDismissal.kind == kind,
             PatternDismissal.subject == subject,
             PatternDismissal.month == month,
         )
         if existing:
             return False
-        await PatternDismissal(kind=kind, subject=subject, month=month).insert()
+        await PatternDismissal(
+            user_id=user_id, kind=kind, subject=subject, month=month
+        ).insert()
         return True
 
     @staticmethod
-    async def restore(kind: str, subject: str, month: str) -> bool:
+    async def restore(
+        user_id: PydanticObjectId, kind: str, subject: str, month: str
+    ) -> bool:
         """Hand one finding back to the page."""
         existing = await PatternDismissal.find_one(
+            PatternDismissal.user_id == user_id,
             PatternDismissal.kind == kind,
             PatternDismissal.subject == subject,
             PatternDismissal.month == month,

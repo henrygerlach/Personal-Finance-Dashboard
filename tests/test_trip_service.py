@@ -21,6 +21,8 @@ from app.models import TRIP_EXCLUDED, TRIP_INCLUDED
 from app.services import MAX_SPLIT_WAYS, TripService
 from tests.fixtures.odm import document, patch_services
 
+USER_ID = "u" * 24
+
 
 def run(coro):
     return asyncio.run(coro)
@@ -30,12 +32,12 @@ def run(coro):
 def db(monkeypatch):
     """Empty collections for the four documents the trip service reads."""
     models = SimpleNamespace(
-        Trip=document("Trip", "id"),
+        Trip=document("Trip", "id", "user_id"),
         TripAssignment=document(
-            "TripAssignment", "trip_id", "transaction_id", "decision"
+            "TripAssignment", "user_id", "trip_id", "transaction_id", "decision"
         ),
-        Transaction=document("Transaction", "id"),
-        DismissedTripProposal=document("DismissedTripProposal", "anchor_id"),
+        Transaction=document("Transaction", "id", "user_id"),
+        DismissedTripProposal=document("DismissedTripProposal", "user_id", "anchor_id"),
     )
     patch_services(
         monkeypatch,
@@ -49,6 +51,7 @@ def db(monkeypatch):
 
 def make_trip(db, name="Lisbon", start="2026-07-01", end="2026-07-08", **extra):
     defaults = dict(
+        user_id=USER_ID,
         name=name,
         destination="Portugal",
         start_date=datetime.strptime(start, "%Y-%m-%d"),
@@ -68,6 +71,7 @@ def make_transaction(
 ):
     defaults = dict(
         id=tid,
+        user_id=USER_ID,
         date=datetime.strptime(date, "%Y-%m-%d"),
         amount=amount,
         booking_text=text,
@@ -86,6 +90,7 @@ def make_transaction(
 
 def assign(db, trip, transaction_id, decision=TRIP_INCLUDED, share=1.0):
     row = db.TripAssignment(
+        user_id=USER_ID,
         trip_id=str(trip.id),
         transaction_id=transaction_id,
         decision=decision,
@@ -110,7 +115,7 @@ def test_a_trip_totals_only_what_was_assigned_to_it(db):
     make_transaction(db, "rent", date="2026-07-02", amount=-900.0)
     assign(db, trip, "flight")
 
-    summary = run(TripService.summary(str(trip.id)))
+    summary = run(TripService.summary(USER_ID, str(trip.id)))
 
     assert summary["spend"] == 220.0
 
@@ -123,7 +128,7 @@ def test_a_transaction_inside_the_dates_but_not_assigned_is_not_counted(db):
     trip = make_trip(db)
     make_transaction(db, "groceries", date="2026-07-03", amount=-30.0)
 
-    assert run(TripService.summary(str(trip.id)))["spend"] == 0
+    assert run(TripService.summary(USER_ID, str(trip.id)))["spend"] == 0
 
 
 def test_a_share_reduces_what_the_trip_owns_of_one_payment(db):
@@ -135,7 +140,7 @@ def test_a_share_reduces_what_the_trip_owns_of_one_payment(db):
     make_transaction(db, "house", amount=-600.0)
     assign(db, trip, "house", share=0.5)
 
-    assert run(TripService.summary(str(trip.id)))["spend"] == 300.0
+    assert run(TripService.summary(USER_ID, str(trip.id)))["spend"] == 300.0
 
 
 def test_the_trip_split_and_a_payment_share_compose(db):
@@ -149,7 +154,7 @@ def test_the_trip_split_and_a_payment_share_compose(db):
     make_transaction(db, "house", amount=-600.0)
     assign(db, trip, "house", share=0.5)
 
-    assert run(TripService.summary(str(trip.id)))["spend"] == 150.0
+    assert run(TripService.summary(USER_ID, str(trip.id)))["spend"] == 150.0
 
 
 def test_an_assignment_whose_transaction_has_gone_is_skipped(db):
@@ -164,7 +169,7 @@ def test_an_assignment_whose_transaction_has_gone_is_skipped(db):
     assign(db, trip, "meal")
     assign(db, trip, "vanished")
 
-    assert run(TripService.summary(str(trip.id)))["spend"] == 40.0
+    assert run(TripService.summary(USER_ID, str(trip.id)))["spend"] == 40.0
 
 
 def test_a_budget_share_is_withheld_rather_than_guessed(db):
@@ -177,8 +182,10 @@ def test_a_budget_share_is_withheld_rather_than_guessed(db):
     make_transaction(db, "meal", amount=-250.0)
     assign(db, with_budget, "meal")
 
-    assert run(TripService.summary(str(trip.id)))["budget_share"] is None
-    assert run(TripService.summary(str(with_budget.id)))["budget_share"] == 0.25
+    assert run(TripService.summary(USER_ID, str(trip.id)))["budget_share"] is None
+    assert (
+        run(TripService.summary(USER_ID, str(with_budget.id)))["budget_share"] == 0.25
+    )
 
 
 # --- Creating and rewriting ---------------------------------------------------
@@ -190,17 +197,29 @@ def test_a_trip_needs_a_name(db):
     it is the user's half of the work and what makes confirming a decision.
     """
     with pytest.raises(ValueError, match="needs a name"):
-        run(TripService.create("  ", datetime(2026, 7, 1), datetime(2026, 7, 8)))
+        run(
+            TripService.create(
+                USER_ID, "  ", datetime(2026, 7, 1), datetime(2026, 7, 8)
+            )
+        )
 
 
 def test_a_trip_cannot_end_before_it_starts(db):
     with pytest.raises(ValueError, match="cannot end before"):
-        run(TripService.create("Lisbon", datetime(2026, 7, 8), datetime(2026, 7, 1)))
+        run(
+            TripService.create(
+                USER_ID, "Lisbon", datetime(2026, 7, 8), datetime(2026, 7, 1)
+            )
+        )
 
 
 def test_a_one_day_trip_is_allowed(db):
     """A day trip is a trip, and the check is on the wrong order, not on length."""
-    trip = run(TripService.create("Bruges", datetime(2026, 7, 1), datetime(2026, 7, 1)))
+    trip = run(
+        TripService.create(
+            USER_ID, "Bruges", datetime(2026, 7, 1), datetime(2026, 7, 1)
+        )
+    )
 
     assert trip.name == "Bruges"
 
@@ -212,6 +231,7 @@ def test_an_empty_destination_and_note_are_stored_as_absent(db):
     """
     trip = run(
         TripService.create(
+            USER_ID,
             "Lisbon",
             datetime(2026, 7, 1),
             datetime(2026, 7, 8),
@@ -228,7 +248,7 @@ def test_a_budget_of_zero_is_no_budget(db):
     """Zero would mean every trip is instantly over budget."""
     trip = run(
         TripService.create(
-            "Lisbon", datetime(2026, 7, 1), datetime(2026, 7, 8), budget=0
+            USER_ID, "Lisbon", datetime(2026, 7, 1), datetime(2026, 7, 8), budget=0
         )
     )
 
@@ -246,11 +266,11 @@ def test_moving_the_dates_touches_no_assignment(db):
 
     run(
         TripService.update(
-            str(trip.id), "Lisbon", datetime(2026, 7, 2), datetime(2026, 7, 10)
+            USER_ID, str(trip.id), "Lisbon", datetime(2026, 7, 2), datetime(2026, 7, 10)
         )
     )
 
-    assert run(TripService.summary(str(trip.id)))["spend"] == 220.0
+    assert run(TripService.summary(USER_ID, str(trip.id)))["spend"] == 220.0
 
 
 def test_an_update_holds_the_same_rules_as_a_creation(db):
@@ -259,13 +279,17 @@ def test_an_update_holds_the_same_rules_as_a_creation(db):
     with pytest.raises(ValueError, match="needs a name"):
         run(
             TripService.update(
-                str(trip.id), "", datetime(2026, 7, 1), datetime(2026, 7, 8)
+                USER_ID, str(trip.id), "", datetime(2026, 7, 1), datetime(2026, 7, 8)
             )
         )
     with pytest.raises(ValueError, match="cannot end before"):
         run(
             TripService.update(
-                str(trip.id), "Lisbon", datetime(2026, 7, 8), datetime(2026, 7, 1)
+                USER_ID,
+                str(trip.id),
+                "Lisbon",
+                datetime(2026, 7, 8),
+                datetime(2026, 7, 1),
             )
         )
 
@@ -281,7 +305,7 @@ def test_deleting_a_trip_takes_its_decisions_with_it(db):
     assign(db, trip, "meal")
     assign(db, other, "meal")
 
-    removed = run(TripService.delete(str(trip.id)))
+    removed = run(TripService.delete(USER_ID, str(trip.id)))
 
     assert removed == 1
     assert [row.trip_id for row in db.TripAssignment.rows] == [str(other.id)]
@@ -293,7 +317,7 @@ def test_an_id_that_is_not_an_id_at_all_is_a_value_error(db):
     make a stale bookmark a 500.
     """
     with pytest.raises(ValueError):
-        run(TripService.detail("not-an-object-id"))
+        run(TripService.detail(USER_ID, "not-an-object-id"))
 
 
 # --- One payment, one trip ----------------------------------------------------
@@ -310,11 +334,11 @@ def test_including_a_transaction_another_trip_holds_moves_it(db):
     make_transaction(db, "flight", date="2026-06-01", amount=-220.0)
     assign(db, lisbon, "flight")
 
-    result = run(TripService.assign(str(rome.id), "flight", TRIP_INCLUDED))
+    result = run(TripService.assign(USER_ID, str(rome.id), "flight", TRIP_INCLUDED))
 
     assert result["moved_from"] == "Lisbon"
-    assert run(TripService.summary(str(lisbon.id)))["spend"] == 0
-    assert run(TripService.summary(str(rome.id)))["spend"] == 220.0
+    assert run(TripService.summary(USER_ID, str(lisbon.id)))["spend"] == 0
+    assert run(TripService.summary(USER_ID, str(rome.id)))["spend"] == 220.0
 
 
 def test_reassigning_within_the_same_trip_is_not_a_move(db):
@@ -323,17 +347,19 @@ def test_reassigning_within_the_same_trip_is_not_a_move(db):
     make_transaction(db, "house", amount=-600.0)
     assign(db, trip, "house")
 
-    result = run(TripService.assign(str(trip.id), "house", TRIP_INCLUDED, share=0.5))
+    result = run(
+        TripService.assign(USER_ID, str(trip.id), "house", TRIP_INCLUDED, share=0.5)
+    )
 
     assert result["moved_from"] is None
-    assert run(TripService.summary(str(trip.id)))["spend"] == 300.0
+    assert run(TripService.summary(USER_ID, str(trip.id)))["spend"] == 300.0
 
 
 def test_an_unknown_decision_is_refused(db):
     trip = make_trip(db)
 
     with pytest.raises(ValueError, match="Unknown decision"):
-        run(TripService.assign(str(trip.id), "x", "perhaps"))
+        run(TripService.assign(USER_ID, str(trip.id), "x", "perhaps"))
 
 
 @pytest.mark.parametrize("share", [0, -0.5, 1.5])
@@ -345,7 +371,7 @@ def test_a_share_outside_the_range_is_refused(db, share):
     trip = make_trip(db)
 
     with pytest.raises(ValueError, match="share"):
-        run(TripService.assign(str(trip.id), "x", TRIP_INCLUDED, share=share))
+        run(TripService.assign(USER_ID, str(trip.id), "x", TRIP_INCLUDED, share=share))
 
 
 def test_excluding_is_an_answer_and_clearing_forgets_the_question(db):
@@ -356,10 +382,10 @@ def test_excluding_is_an_answer_and_clearing_forgets_the_question(db):
     trip = make_trip(db)
     make_transaction(db, "meal")
 
-    run(TripService.assign(str(trip.id), "meal", TRIP_EXCLUDED))
+    run(TripService.assign(USER_ID, str(trip.id), "meal", TRIP_EXCLUDED))
     assert len(db.TripAssignment.rows) == 1
 
-    cleared = run(TripService.clear(str(trip.id), "meal"))
+    cleared = run(TripService.clear(USER_ID, str(trip.id), "meal"))
     assert cleared["cleared"] is True
     assert db.TripAssignment.rows == []
 
@@ -367,7 +393,7 @@ def test_excluding_is_an_answer_and_clearing_forgets_the_question(db):
 def test_clearing_a_decision_that_was_never_made_says_so(db):
     trip = make_trip(db)
 
-    assert run(TripService.clear(str(trip.id), "never"))["cleared"] is False
+    assert run(TripService.clear(USER_ID, str(trip.id), "never"))["cleared"] is False
 
 
 def test_assigning_a_selection_writes_exactly_that_selection(db):
@@ -381,10 +407,10 @@ def test_assigning_a_selection_writes_exactly_that_selection(db):
     make_transaction(db, "b", amount=-20.0)
     make_transaction(db, "c", amount=-40.0)
 
-    written = run(TripService.assign_many(str(trip.id), ["a", "c"]))
+    written = run(TripService.assign_many(USER_ID, str(trip.id), ["a", "c"]))
 
     assert written == 2
-    assert run(TripService.summary(str(trip.id)))["spend"] == 50.0
+    assert run(TripService.summary(USER_ID, str(trip.id)))["spend"] == 50.0
 
 
 # --- Splitting ----------------------------------------------------------------
@@ -399,10 +425,10 @@ def test_a_split_halves_the_total_without_touching_a_share(db):
     make_transaction(db, "house", amount=-600.0)
     assign(db, trip, "house", share=1.0)
 
-    run(TripService.set_split(str(trip.id), 2))
+    run(TripService.set_split(USER_ID, str(trip.id), 2))
 
     assert db.TripAssignment.rows[0].share == 1.0
-    assert run(TripService.summary(str(trip.id)))["spend"] == 300.0
+    assert run(TripService.summary(USER_ID, str(trip.id)))["spend"] == 300.0
 
 
 def test_splitting_one_way_puts_the_whole_total_back(db):
@@ -411,9 +437,9 @@ def test_splitting_one_way_puts_the_whole_total_back(db):
     make_transaction(db, "house", amount=-600.0)
     assign(db, trip, "house")
 
-    run(TripService.set_split(str(trip.id), 1))
+    run(TripService.set_split(USER_ID, str(trip.id), 1))
 
-    assert run(TripService.summary(str(trip.id)))["spend"] == 600.0
+    assert run(TripService.summary(USER_ID, str(trip.id)))["spend"] == 600.0
 
 
 @pytest.mark.parametrize("ways", [0, -1, MAX_SPLIT_WAYS + 1])
@@ -422,7 +448,7 @@ def test_an_impossible_split_is_refused(db, ways):
     trip = make_trip(db)
 
     with pytest.raises(ValueError, match="split between"):
-        run(TripService.set_split(str(trip.id), ways))
+        run(TripService.set_split(USER_ID, str(trip.id), ways))
 
 
 # --- The overview -------------------------------------------------------------
@@ -430,7 +456,11 @@ def test_an_impossible_split_is_refused(db, ways):
 
 def test_the_overview_of_no_trips_is_empty_rather_than_absent(db):
     """The page renders the totals unconditionally."""
-    assert run(TripService.overview()) == {
+    assert run(
+        TripService.overview(
+            USER_ID,
+        )
+    ) == {
         "trips": [],
         "count": 0,
         "total_net": 0.0,
@@ -443,7 +473,11 @@ def test_the_overview_lists_trips_by_departure_newest_first(db):
     make_trip(db, name="Old", start="2025-01-01", end="2025-01-08")
     make_trip(db, name="New", start="2026-07-01", end="2026-07-08")
 
-    overview = run(TripService.overview())
+    overview = run(
+        TripService.overview(
+            USER_ID,
+        )
+    )
 
     assert [item["name"] for item in overview["trips"]] == ["New", "Old"]
 
@@ -457,7 +491,11 @@ def test_the_overview_totals_across_every_trip(db):
     assign(db, lisbon, "a")
     assign(db, rome, "b")
 
-    overview = run(TripService.overview())
+    overview = run(
+        TripService.overview(
+            USER_ID,
+        )
+    )
 
     assert overview["count"] == 2
     assert overview["total_spend"] == 350.0
@@ -469,7 +507,11 @@ def test_the_overview_names_the_headline_category_of_each_trip(db):
     make_transaction(db, "hotel", amount=-400.0, minor_category="Accommodation")
     assign(db, trip, "hotel")
 
-    overview = run(TripService.overview())
+    overview = run(
+        TripService.overview(
+            USER_ID,
+        )
+    )
 
     assert overview["trips"][0]["top_category"] == "Accommodation"
 
@@ -478,7 +520,14 @@ def test_a_trip_with_nothing_assigned_has_no_headline_category(db):
     """A freshly created trip is the normal case, not an edge one."""
     make_trip(db)
 
-    assert run(TripService.overview())["trips"][0]["top_category"] is None
+    assert (
+        run(
+            TripService.overview(
+                USER_ID,
+            )
+        )["trips"][0]["top_category"]
+        is None
+    )
 
 
 # --- The detail page ----------------------------------------------------------
@@ -495,7 +544,7 @@ def test_the_detail_lists_assignments_newest_first(db):
     assign(db, trip, "early")
     assign(db, trip, "late")
 
-    detail = run(TripService.detail(str(trip.id)))
+    detail = run(TripService.detail(USER_ID, str(trip.id)))
 
     assert [row["date"] for row in detail["assigned"]] == ["2026-07-06", "2026-07-02"]
 
@@ -506,7 +555,7 @@ def test_an_assigned_transaction_is_not_offered_in_the_queue_as_well(db):
     make_transaction(db, "meal", date="2026-07-03", amount=-40.0)
     assign(db, trip, "meal")
 
-    detail = run(TripService.detail(str(trip.id)))
+    detail = run(TripService.detail(USER_ID, str(trip.id)))
 
     queued = [c["id"] for phase in detail["candidates"].values() for c in phase]
     assert "meal" not in queued
@@ -522,7 +571,7 @@ def test_a_transaction_another_trip_holds_is_shown_as_claimed(db):
     make_transaction(db, "meal", date="2026-07-05", amount=-40.0)
     assign(db, lisbon, "meal")
 
-    detail = run(TripService.detail(str(rome.id)))
+    detail = run(TripService.detail(USER_ID, str(rome.id)))
 
     claimed = [
         c for phase in detail["candidates"].values() for c in phase if c["id"] == "meal"
@@ -542,7 +591,7 @@ def test_a_charge_made_during_another_journey_is_not_ticked_for_this_one(db):
         db, "tour", date="2026-02-10", amount=-300.0, minor_category="Package Tours"
     )
 
-    detail = run(TripService.detail(str(summer.id)))
+    detail = run(TripService.detail(USER_ID, str(summer.id)))
 
     offered = [
         c for phase in detail["candidates"].values() for c in phase if c["id"] == "tour"
@@ -557,7 +606,7 @@ def test_the_detail_counts_what_is_waiting_to_be_decided(db):
     trip = make_trip(db)
     make_transaction(db, "meal", date="2026-07-03", amount=-40.0)
 
-    detail = run(TripService.detail(str(trip.id)))
+    detail = run(TripService.detail(USER_ID, str(trip.id)))
 
     assert detail["candidate_count"] >= 1
     assert detail["suggested_count"] >= 1
@@ -565,7 +614,7 @@ def test_the_detail_counts_what_is_waiting_to_be_decided(db):
 
 def test_a_trip_that_does_not_exist_raises(db):
     with pytest.raises(ValueError, match="No trip"):
-        run(TripService.detail("68af1e2c9b4d5a6f7c8d9e01"))
+        run(TripService.detail(USER_ID, "68af1e2c9b4d5a6f7c8d9e01"))
 
 
 # --- Search -------------------------------------------------------------------
@@ -580,7 +629,7 @@ def test_search_matches_the_bank_s_own_line_and_the_merchant(db):
     make_transaction(db, "a", text="RYANAIR DUBLIN", amount=-90.0)
     make_transaction(db, "b", text="Auftraggeber: EDEKA", amount=-12.0)
 
-    results = run(TripService.search(str(trip.id), "ryanair"))
+    results = run(TripService.search(USER_ID, str(trip.id), "ryanair"))
 
     assert [row["id"] for row in results] == ["a"]
 
@@ -590,7 +639,7 @@ def test_search_is_case_insensitive(db):
     trip = make_trip(db)
     make_transaction(db, "a", text="RYANAIR DUBLIN", amount=-90.0)
 
-    assert len(run(TripService.search(str(trip.id), "RyanAir"))) == 1
+    assert len(run(TripService.search(USER_ID, str(trip.id), "RyanAir"))) == 1
 
 
 def test_a_one_character_search_returns_nothing(db):
@@ -601,7 +650,7 @@ def test_a_one_character_search_returns_nothing(db):
     trip = make_trip(db)
     make_transaction(db, "a", text="RYANAIR", amount=-90.0)
 
-    assert run(TripService.search(str(trip.id), "r")) == []
+    assert run(TripService.search(USER_ID, str(trip.id), "r")) == []
 
 
 def test_search_returns_the_most_recent_matches_first(db):
@@ -610,7 +659,9 @@ def test_search_returns_the_most_recent_matches_first(db):
     make_transaction(db, "old", date="2024-01-01", text="RYANAIR", amount=-90.0)
     make_transaction(db, "new", date="2026-06-01", text="RYANAIR", amount=-95.0)
 
-    assert [row["id"] for row in run(TripService.search(str(trip.id), "ryanair"))] == [
+    assert [
+        row["id"] for row in run(TripService.search(USER_ID, str(trip.id), "ryanair"))
+    ] == [
         "new",
         "old",
     ]
@@ -622,7 +673,7 @@ def test_search_says_which_of_its_results_this_trip_already_holds(db):
     make_transaction(db, "a", text="RYANAIR", amount=-90.0)
     assign(db, trip, "a")
 
-    row = run(TripService.search(str(trip.id), "ryanair"))[0]
+    row = run(TripService.search(USER_ID, str(trip.id), "ryanair"))[0]
 
     assert row["assigned"] is True
     assert row["claimed_by"] is None
@@ -645,9 +696,17 @@ def test_a_window_a_trip_already_covers_is_not_proposed(db):
             text=f"KAUFHAUS LISSABON PT {day}",
         )
 
-    before = run(TripService.proposals())
+    before = run(
+        TripService.proposals(
+            USER_ID,
+        )
+    )
     make_trip(db, start="2026-07-01", end="2026-07-08")
-    after = run(TripService.proposals())
+    after = run(
+        TripService.proposals(
+            USER_ID,
+        )
+    )
 
     assert len(after["proposals"]) <= len(before["proposals"])
 
@@ -658,11 +717,18 @@ def test_a_refused_proposal_is_not_offered_again(db):
     week comes back after every upload.
     """
     dismissed = db.DismissedTripProposal(
-        anchor_id="nope", start_date=datetime(2026, 7, 1), end_date=datetime(2026, 7, 8)
+        user_id=USER_ID,
+        anchor_id="nope",
+        start_date=datetime(2026, 7, 1),
+        end_date=datetime(2026, 7, 8),
     )
     db.DismissedTripProposal.rows.append(dismissed)
 
-    result = run(TripService.proposals())
+    result = run(
+        TripService.proposals(
+            USER_ID,
+        )
+    )
 
     assert all(item["anchor_id"] != "nope" for item in result["proposals"])
 
@@ -670,37 +736,39 @@ def test_a_refused_proposal_is_not_offered_again(db):
 def test_refusing_a_proposal_that_detection_does_not_produce_is_an_error(db):
     """Storing a refusal of nothing leaves a row that can never be undone."""
     with pytest.raises(ValueError, match="No detected trip"):
-        run(TripService.dismiss_proposal("invented"))
+        run(TripService.dismiss_proposal(USER_ID, "invented"))
 
 
 def test_refusing_the_same_proposal_twice_is_not_a_second_refusal(db):
     """Two rows for one refusal would take two clicks to undo."""
     db.DismissedTripProposal.rows.append(
         db.DismissedTripProposal(
+            user_id=USER_ID,
             anchor_id="x",
             start_date=datetime(2026, 7, 1),
             end_date=datetime(2026, 7, 8),
         )
     )
 
-    assert run(TripService.dismiss_proposal("x")) is False
+    assert run(TripService.dismiss_proposal(USER_ID, "x")) is False
 
 
 def test_a_refusal_can_be_undone(db):
     db.DismissedTripProposal.rows.append(
         db.DismissedTripProposal(
+            user_id=USER_ID,
             anchor_id="x",
             start_date=datetime(2026, 7, 1),
             end_date=datetime(2026, 7, 8),
         )
     )
 
-    assert run(TripService.restore_proposal("x")) is True
+    assert run(TripService.restore_proposal(USER_ID, "x")) is True
     assert db.DismissedTripProposal.rows == []
 
 
 def test_undoing_a_refusal_that_was_never_made_says_so(db):
-    assert run(TripService.restore_proposal("never")) is False
+    assert run(TripService.restore_proposal(USER_ID, "never")) is False
 
 
 def test_the_proposals_say_what_the_detector_cannot_see(db):
@@ -710,7 +778,11 @@ def test_the_proposals_say_what_the_detector_cannot_see(db):
     """
     make_transaction(db, "a", text="EDEKA", amount=-20.0)
 
-    assert "home_country" in run(TripService.proposals())
+    assert "home_country" in run(
+        TripService.proposals(
+            USER_ID,
+        )
+    )
 
 
 # --- What a proposal carries --------------------------------------------------
@@ -751,7 +823,11 @@ def test_a_proposal_carries_the_evidence_behind_it(db):
     """
     a_week_abroad(db)
 
-    result = run(TripService.proposals())
+    result = run(
+        TripService.proposals(
+            USER_ID,
+        )
+    )
 
     assert result["proposals"]
     proposal = result["proposals"][0]
@@ -767,7 +843,11 @@ def test_a_proposal_is_named_by_its_merchants_rather_than_its_country_code(db):
     """
     a_week_abroad(db)
 
-    proposal = run(TripService.proposals())["proposals"][0]
+    proposal = run(
+        TripService.proposals(
+            USER_ID,
+        )
+    )["proposals"][0]
 
     assert any("LISBOA" in name for name in proposal["merchants"])
 
@@ -780,7 +860,14 @@ def test_a_proposal_carries_no_name(db):
     """
     a_week_abroad(db)
 
-    assert "name" not in run(TripService.proposals())["proposals"][0]
+    assert (
+        "name"
+        not in run(
+            TripService.proposals(
+                USER_ID,
+            )
+        )["proposals"][0]
+    )
 
 
 def test_a_proposal_can_be_refused_and_then_offered_again(db):
@@ -789,17 +876,29 @@ def test_a_proposal_can_be_refused_and_then_offered_again(db):
     it has to put the proposal back.
     """
     a_week_abroad(db)
-    anchor = run(TripService.proposals())["proposals"][0]["anchor_id"]
+    anchor = run(
+        TripService.proposals(
+            USER_ID,
+        )
+    )["proposals"][0]["anchor_id"]
 
-    assert run(TripService.dismiss_proposal(anchor)) is True
-    after = run(TripService.proposals())
+    assert run(TripService.dismiss_proposal(USER_ID, anchor)) is True
+    after = run(
+        TripService.proposals(
+            USER_ID,
+        )
+    )
     assert all(item["anchor_id"] != anchor for item in after["proposals"])
     assert any(item["anchor_id"] == anchor for item in after["dismissed"])
 
-    assert run(TripService.restore_proposal(anchor)) is True
+    assert run(TripService.restore_proposal(USER_ID, anchor)) is True
     assert any(
         item["anchor_id"] == anchor
-        for item in run(TripService.proposals())["proposals"]
+        for item in run(
+            TripService.proposals(
+                USER_ID,
+            )
+        )["proposals"]
     )
 
 
@@ -809,11 +908,22 @@ def test_confirming_a_trip_retires_the_proposal_that_led_to_it(db):
     piece of state saying it was accepted and none to fall out of step.
     """
     a_week_abroad(db)
-    assert run(TripService.proposals())["proposals"]
+    assert run(
+        TripService.proposals(
+            USER_ID,
+        )
+    )["proposals"]
 
     make_trip(db, start="2026-07-01", end="2026-07-08")
 
-    assert run(TripService.proposals())["proposals"] == []
+    assert (
+        run(
+            TripService.proposals(
+                USER_ID,
+            )
+        )["proposals"]
+        == []
+    )
 
 
 def test_a_trip_id_that_is_not_an_id_is_no_trip_rather_than_a_crash(db):
@@ -825,7 +935,7 @@ def test_a_trip_id_that_is_not_an_id_is_no_trip_rather_than_a_crash(db):
     import asyncio
 
     with pytest.raises(ValueError):
-        asyncio.run(TripService.detail("not-an-id"))
+        asyncio.run(TripService.detail(USER_ID, "not-an-id"))
 
 
 def test_search_finds_a_match_beyond_the_first_page(db, monkeypatch):
@@ -839,9 +949,9 @@ def test_search_finds_a_match_beyond_the_first_page(db, monkeypatch):
         make_transaction(db, f"n{n}", date=f"2026-06-{20 - n:02d}", text="EDEKA")
     make_transaction(db, "old", date="2026-01-02", text="RYANAIR DUBLIN")
 
-    assert [row["id"] for row in run(TripService.search(str(trip.id), "ryanair"))] == [
-        "old"
-    ]
+    assert [
+        row["id"] for row in run(TripService.search(USER_ID, str(trip.id), "ryanair"))
+    ] == ["old"]
 
 
 def test_search_stops_reading_once_it_has_enough(db, monkeypatch):
@@ -863,5 +973,5 @@ def test_search_stops_reading_once_it_has_enough(db, monkeypatch):
 
     monkeypatch.setattr(db.Transaction, "find", counting_find)
 
-    assert len(run(TripService.search(str(trip.id), "ryanair"))) == 25
+    assert len(run(TripService.search(USER_ID, str(trip.id), "ryanair"))) == 25
     assert len(pages) == 1
