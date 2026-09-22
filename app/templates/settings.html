@@ -30,7 +30,7 @@
 {% endmacro %}
 
 {% block content %}
-<div class="settings-column">
+<div class="page-column">
   <section class="hero">
     <div class="hero-text">
       <span class="eyebrow">Account</span>
@@ -39,7 +39,7 @@
   </section>
 
   {% if error %}
-  <p class="settings-error">{{ error }}</p>
+  <p class="form-error">{{ error }}</p>
   {% endif %}
 
   {% if has_credentials %}
@@ -47,15 +47,15 @@
   {% endif %}
 
   <form method="post" action="/settings/balances"
-        class="settings-card balances-form" aria-labelledby="balances-title">
-    <div class="settings-card-head">
+        class="form-card balances-form" aria-labelledby="balances-title">
+    <div class="form-card-head">
       <h2 class="panel-title" id="balances-title">Comdirect</h2>
-      <span class="settings-status {{ 'is-on' if balances_enabled and has_credentials }}">
+      <span class="status-pill {{ 'is-on' if balances_enabled and has_credentials }}">
         {{ "Not configured" if not has_credentials else ("On" if balances_enabled else "Off") }}
       </span>
     </div>
 
-    <div class="settings-card-body">
+    <div class="form-card-body">
       <div class="checkbox-row">
         <input id="balances-enabled" name="enabled" type="checkbox" value="true"
                {% if balances_enabled %}checked{% endif %} />
@@ -75,7 +75,7 @@
       </div>
     </div>
 
-    <div class="settings-card-foot">
+    <div class="form-card-foot">
       {% if has_credentials %}
       <button type="submit" form="revoke-balances" class="ghost-button is-danger">
         Revoke
@@ -91,22 +91,22 @@
   {% endif %}
 
   <form method="post" action="/settings/anthropic"
-        class="settings-card" aria-labelledby="anthropic-title">
-    <div class="settings-card-head">
+        class="form-card" aria-labelledby="anthropic-title">
+    <div class="form-card-head">
       <h2 class="panel-title" id="anthropic-title">Anthropic</h2>
-      <span class="settings-status {{ 'is-on' if anthropic_state.stored }}">
+      <span class="status-pill {{ 'is-on' if anthropic_state.stored }}">
         {% if anthropic_state.stored %}Stored
         {%- elif anthropic_state.configured %}Key from .env
         {%- else %}Not configured{% endif %}
       </span>
     </div>
 
-    <div class="settings-card-body">
+    <div class="form-card-body">
       {{ secret_field("anthropic-key", "key", "API key",
                       anthropic_key or "", required=true) }}
     </div>
 
-    <div class="settings-card-foot">
+    <div class="form-card-foot">
       {% if anthropic_state.stored %}
       <button type="submit" form="revoke-anthropic" class="ghost-button is-danger">
         Revoke

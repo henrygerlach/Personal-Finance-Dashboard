@@ -1,20 +1,23 @@
 {% extends "base.html" %}
 
-{% block content %}
-<section class="hero">
-  <div class="hero-text">
-    <span class="eyebrow">Import</span>
-    <h1>Upload a statement</h1>
-    <p class="subtitle">
-      Comdirect CSV exports, and PayPal activity exports — a PayPal file is
-      recognised by its header and stored as the evidence that puts the payee
-      back into truncated PayPal lines. Anything already in the database is
-      skipped, so re-importing an overlapping export is safe.
-    </p>
-  </div>
-</section>
+{#
+  A PayPal export is recognised by its header and stored as the evidence that
+  puts the payee back into truncated PayPal lines; anything already in the
+  database is skipped, so re-importing an overlapping export is safe. None of
+  that is a decision the person dropping the file makes, so none of it is on
+  the page — the drop zone names what it accepts and the result says what
+  landed.
+#}
 
-<section>
+{% block content %}
+<div class="page-column">
+  <section class="hero">
+    <div class="hero-text">
+      <span class="eyebrow">Import</span>
+      <h1>Upload a statement</h1>
+    </div>
+  </section>
+
   <div class="upload-zone" id="uploadZone" role="button" tabindex="0"
        aria-label="Choose CSV files or drop them here">
     <input type="file" id="fileInput" accept=".csv,text/csv" multiple hidden />
@@ -27,7 +30,7 @@
               stroke-linecap="round" />
       </svg>
       <p class="upload-title">Choose CSV files</p>
-      <p class="upload-hint">or drop them anywhere in this box</p>
+      <p class="upload-hint">Comdirect statements and PayPal activity · CSV</p>
     </div>
     <div class="upload-progress" id="uploadProgress" hidden>
       <div class="spinner"></div>
@@ -36,7 +39,7 @@
   </div>
 
   <div class="upload-result" id="uploadResult" hidden></div>
-</section>
+</div>
 
 <script>
   (function () {

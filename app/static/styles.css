@@ -522,9 +522,10 @@ a {
   align-items: center;
 }
 
-/* Standing alone on the page, this takes the upload zone's footprint rather
-   than stretching the full width. It spans every column of whatever grid it
-   sits in first, so it centres on the page and not inside one column. */
+/* Standing alone on a full-bleed page, this takes a fixed footprint rather
+   than stretching across the whole grid. It spans every column of whatever
+   grid it sits in first, so it centres on the page and not inside one
+   column. */
 .panel-outline.is-centered {
   grid-column: 1 / -1;
   background: var(--ink-1);
@@ -532,6 +533,13 @@ a {
   margin: 0 auto;
   min-height: 260px;
   justify-content: center;
+}
+
+/* A column has already done the narrowing, so an empty state inside one
+   fills it — capping it again would leave it visibly short of the upload
+   zone and the cards it stands in for. */
+.page-column .panel-outline.is-centered {
+  width: 100%;
 }
 
 .panel-text {
@@ -1389,8 +1397,6 @@ input:disabled {
    ========================================================================== */
 
 .upload-zone {
-  width: min(560px, 100%);
-  margin: 0 auto;
   min-height: 260px;
   padding: var(--gap-xl);
   border: 1px dashed var(--rule-strong);
@@ -1453,11 +1459,11 @@ input:disabled {
   animation: spin 0.8s linear infinite;
 }
 
+/* Same box as the drop zone above it, so the report reads as that zone's
+   answer rather than as a notification that happens to be nearby. */
 .upload-result {
-  width: min(560px, 100%);
-  margin: var(--gap-md) auto 0;
-  padding: var(--gap-md);
-  border-radius: var(--radius-md);
+  padding: var(--gap-lg);
+  border-radius: var(--radius-lg);
   border: 1px solid var(--rule);
   background: var(--ink-1);
   font-size: 0.9rem;
@@ -1854,27 +1860,22 @@ input:disabled {
 
 .review-list {
   display: grid;
-  gap: 0.75rem;
-}
-
-.review-item {
-  border: 1px solid var(--rule);
-  border-radius: 12px;
-  padding: 1rem 1.15rem;
-  background: var(--panel);
+  gap: var(--gap-md);
 }
 
 .review-facts {
   display: flex;
   align-items: baseline;
-  gap: 1rem;
+  gap: var(--gap-md);
   flex-wrap: wrap;
   font-variant-numeric: tabular-nums;
 }
 
 .review-date {
-  color: var(--ink-dim);
-  font-size: 0.85rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  color: var(--paper-faint);
 }
 
 .review-amount {
@@ -1882,37 +1883,20 @@ input:disabled {
   font-weight: 600;
 }
 
-.review-confidence {
-  margin-left: auto;
-  font-size: 0.78rem;
-  color: var(--ink-dim);
-  border: 1px solid var(--rule);
-  border-radius: 999px;
-  padding: 0.1rem 0.6rem;
-}
-
 .review-booking {
-  margin: 0.5rem 0 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 0.8rem;
-  color: var(--ink-dim);
+  color: var(--paper-dim);
   word-break: break-word;
 }
 
 .review-reason {
-  margin: 0.4rem 0 0;
   font-size: 0.85rem;
-  color: var(--ink-dim);
-  font-style: italic;
+  color: var(--paper-faint);
 }
 
-.review-form {
-  display: flex;
-  gap: 0.6rem;
-  margin-top: 0.9rem;
-  flex-wrap: wrap;
-}
-
+/* The selects are the decision, so they take the footer's width and leave
+   the button at its own size, rather than three controls sharing it evenly. */
 .review-form select {
   flex: 1 1 12rem;
   min-width: 0;
@@ -4097,14 +4081,19 @@ input:disabled {
 }
 
 /* ==========================================================================
-   Settings
+   The form card
 
-   A settings page is read one decision at a time, so it is one centred
-   column rather than the full-bleed grid every other page uses: a text
-   field stretched across 1600px looks like a mistake.
+   Settings, review and upload are worked one decision at a time rather than
+   read across, so they are a single centred column rather than the full-bleed
+   grid the chart pages use: a text field stretched across 1600px looks like a
+   mistake, and so does a queue of one-line items.
+
+   Every card in that column is the same three bands — what it is, the fields,
+   then the actions on a footer of their own — so a settings form and a
+   transaction awaiting a category are the same object to read.
    ========================================================================== */
 
-.settings-column {
+.page-column {
   width: min(720px, 100%);
   margin: 0 auto;
   display: flex;
@@ -4112,7 +4101,7 @@ input:disabled {
   gap: var(--gap-lg);
 }
 
-.settings-card {
+.form-card {
   background: var(--ink-1);
   border: 1px solid var(--rule);
   border-radius: var(--radius-lg);
@@ -4122,18 +4111,19 @@ input:disabled {
   gap: var(--gap-md);
 }
 
-.settings-card-head {
+.form-card-head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: var(--gap-md);
 }
 
-/* Whether the setting is on is the first thing worth knowing about it, so it
-   sits on the title line and not beside the save button, where it read as a
-   caption belonging to the button. Monochrome: on is simply the brighter of
-   the two, because a state nobody has to act on is not a signal. */
-.settings-status {
+/* The one fact about a card that decides whether you act on it — a setting
+   being on, a classifier's confidence — rides the title line rather than
+   sitting beside the save button, where it read as a caption belonging to
+   the button. Monochrome: on is simply the brighter of the two, because a
+   state nobody has to act on is not a signal. */
+.status-pill {
   font-family: var(--font-mono);
   font-size: 0.68rem;
   letter-spacing: 0.06em;
@@ -4145,22 +4135,28 @@ input:disabled {
   color: var(--paper-faint);
 }
 
-.settings-status.is-on {
+.status-pill.is-on {
   color: var(--paper);
   border-color: var(--paper-dim);
 }
 
-/* The fold-out supplies its own spacing as it opens, so the body holds the
-   fields with no gap of its own — a closed fold-out leaves no empty band. */
-.settings-card-body {
+.form-card-body {
   display: flex;
   flex-direction: column;
+  gap: var(--gap-sm);
+}
+
+/* The credentials fold-out supplies its own spacing as it opens, so this one
+   body sets no gap: a gap would hold the band open once it had closed. */
+.balances-form .form-card-body {
+  gap: 0;
 }
 
 /* Full-bleed, on the surface above the card: the actions are a band the card
    ends with rather than two buttons left floating under the last field. */
-.settings-card-foot {
+.form-card-foot {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   align-items: center;
   gap: var(--gap-sm);
@@ -4172,11 +4168,11 @@ input:disabled {
 }
 
 /* Destroying and saving are opposite decisions and sit at opposite ends. */
-.settings-card-foot .is-danger {
+.form-card-foot .is-danger {
   margin-right: auto;
 }
 
-.settings-error {
+.form-error {
   font-size: 0.9rem;
   color: var(--paper);
   background: var(--ink-1);

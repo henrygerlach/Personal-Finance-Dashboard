@@ -42,3 +42,6 @@ graphify-out/
 CLAUDE.md
 .claude/
 .serena/
+# Playwright CLI output (may contain credentials)
+.playwright-cli/
+.playwright/

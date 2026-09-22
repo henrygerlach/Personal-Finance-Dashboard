@@ -1,86 +1,96 @@
 {% extends "base.html" %}
 
-{% block content %}
-<section class="hero">
-  <div class="hero-text">
-    <span class="eyebrow">Low confidence</span>
-    <h1>Needs review</h1>
-    <p class="subtitle">
-      The classifier would not decide these. Filing one here also teaches the
-      merchant, so every future transaction from the same shop is filed the
-      same way — without asking the API again.
-    </p>
-  </div>
-  {% if review_count %}
-  <div class="hero-stat">
-    <span class="hero-stat-value">{{ review_count }}</span>
-    <span class="label">awaiting a decision</span>
-  </div>
-  {% endif %}
-</section>
+{#
+  The queue is worked one row at a time, so it is the settings page's column
+  of form cards rather than a full-bleed list: every item is the same three
+  bands, and the two selects that file it are that card's action footer.
 
-{% if transactions %}
-<section class="section-block">
+  Filing one here also writes the merchant cache, so every later transaction
+  from the same shop is filed the same way without asking the API again. That
+  is worth knowing and not worth a paragraph on the page.
+#}
+
+{% block content %}
+<div class="page-column">
+  <section class="hero">
+    <div class="hero-text">
+      <span class="eyebrow">Low confidence</span>
+      <h1>Needs review</h1>
+    </div>
+    {% if review_count %}
+    <div class="hero-stat">
+      <span class="hero-stat-value">{{ review_count }}</span>
+      <span class="label">awaiting a decision</span>
+    </div>
+    {% endif %}
+  </section>
+
+  {% if transactions %}
   <div class="review-list">
     {% for transaction in transactions %}
-    <article class="review-item">
-      <div class="review-facts">
-        <span class="review-date">{{ transaction.date.strftime("%d %b %Y") }}</span>
-        <span class="review-amount" data-money="{{ transaction.amount }}">
-          {{ "%.2f"|format(transaction.amount) }} €
-        </span>
+    <form class="form-card" method="post"
+          action="/review/{{ transaction.id }}">
+      <div class="form-card-head">
+        <div class="review-facts">
+          <span class="review-date">{{ transaction.date.strftime("%d %b %Y") }}</span>
+          <span class="review-amount" data-money="{{ transaction.amount }}">
+            {{ "%.2f"|format(transaction.amount) }} €
+          </span>
+        </div>
         {% if transaction.confidence is not none %}
-        <span class="review-confidence">
+        <span class="status-pill">
           confidence {{ "%.2f"|format(transaction.confidence) }}
         </span>
         {% endif %}
       </div>
-      <p class="review-booking">{{ transaction.booking_text }}</p>
 
-      {#
-        Comdirect prints no payee on a PayPal line, so once one has been
-        recovered the rest of what PayPal recorded is the only context there
-        is. A payment between two people often carries nothing but its
-        message. Every field is frequently empty, so each line stands or
-        falls on its own rather than the block assuming a shape.
-      #}
-      {% set pp = paypal.get(transaction.id | string) %}
-      {% if pp and (pp.counterparty or pp.sender or pp.receiver
-                    or pp.subject or pp.note or pp.item_title) %}
-      <dl class="transaction-facts paypal-facts">
-        {% if pp.counterparty %}
-        <dt>Payee</dt>
-        <dd>{{ pp.counterparty }}</dd>
-        {% endif %}
-        {% if pp.sender %}
-        <dt>From</dt>
-        <dd>{{ pp.sender }}</dd>
-        {% endif %}
-        {% if pp.receiver %}
-        <dt>To</dt>
-        <dd>{{ pp.receiver }}</dd>
-        {% endif %}
-        {% if pp.subject %}
-        <dt>Subject</dt>
-        <dd>{{ pp.subject }}</dd>
-        {% endif %}
-        {% if pp.note %}
-        <dt>Message</dt>
-        <dd class="paypal-message">{{ pp.note }}</dd>
-        {% endif %}
-        {% if pp.item_title %}
-        <dt>Item</dt>
-        <dd>{{ pp.item_title }}</dd>
-        {% endif %}
-      </dl>
-      {% endif %}
+      <div class="form-card-body">
+        <p class="review-booking">{{ transaction.booking_text }}</p>
 
-      {% if transaction.reason %}
-      <p class="review-reason">{{ transaction.reason }}</p>
-      {% endif %}
+        {#
+          Comdirect prints no payee on a PayPal line, so once one has been
+          recovered the rest of what PayPal recorded is the only context there
+          is. A payment between two people often carries nothing but its
+          message. Every field is frequently empty, so each line stands or
+          falls on its own rather than the block assuming a shape.
+        #}
+        {% set pp = paypal.get(transaction.id | string) %}
+        {% if pp and (pp.counterparty or pp.sender or pp.receiver
+                      or pp.subject or pp.note or pp.item_title) %}
+        <dl class="transaction-facts paypal-facts">
+          {% if pp.counterparty %}
+          <dt>Payee</dt>
+          <dd>{{ pp.counterparty }}</dd>
+          {% endif %}
+          {% if pp.sender %}
+          <dt>From</dt>
+          <dd>{{ pp.sender }}</dd>
+          {% endif %}
+          {% if pp.receiver %}
+          <dt>To</dt>
+          <dd>{{ pp.receiver }}</dd>
+          {% endif %}
+          {% if pp.subject %}
+          <dt>Subject</dt>
+          <dd>{{ pp.subject }}</dd>
+          {% endif %}
+          {% if pp.note %}
+          <dt>Message</dt>
+          <dd class="paypal-message">{{ pp.note }}</dd>
+          {% endif %}
+          {% if pp.item_title %}
+          <dt>Item</dt>
+          <dd>{{ pp.item_title }}</dd>
+          {% endif %}
+        </dl>
+        {% endif %}
 
-      <form class="review-form" method="post"
-            action="/review/{{ transaction.id }}">
+        {% if transaction.reason %}
+        <p class="review-reason">{{ transaction.reason }}</p>
+        {% endif %}
+      </div>
+
+      <div class="form-card-foot review-form">
         <select name="major_category" required
                 data-role="major" aria-label="Major category">
           <option value="" disabled selected>Major category</option>
@@ -93,8 +103,8 @@
           <option value="" disabled selected>Minor category</option>
         </select>
         <button type="submit" class="primary-button">Save</button>
-      </form>
-    </article>
+      </div>
+    </form>
     {% endfor %}
   </div>
 
@@ -106,16 +116,13 @@
     <a class="ghost-button" href="/review?skip={{ skip + 50 }}">Next 50</a>
   </div>
   {% endif %}
-</section>
-{% else %}
-<div class="panel-outline is-centered">
-  <p class="panel-title">Nothing to review</p>
-  <p class="panel-text">
-    Every transaction has a category the classifier was confident about.
-  </p>
-  <a class="primary-button" href="/">Back to the dashboard</a>
+  {% else %}
+  <div class="panel-outline is-centered">
+    <p class="panel-title">Nothing to review</p>
+    <a class="primary-button" href="/">Back to the dashboard</a>
+  </div>
+  {% endif %}
 </div>
-{% endif %}
 
 <script>
   // The minor list depends on the major, and the hierarchy is already on the
