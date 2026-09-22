@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+
+{#
+  One card per setting, each built as the same three bands: what it is and
+  whether it is on, the fields, then the actions on their own footer.
+
+  Revoke is the other half of the decision Save makes, so it belongs in that
+  one footer rather than in a second action bar below the card. HTML forbids
+  nesting the two forms that would take, so the revoke form is an empty
+  element elsewhere in the document and its button reaches it through the
+  `form` attribute.
+#}
+
+{% macro secret_field(id, name, label, value, required=false) %}
+<div class="form-group">
+  <label for="{{ id }}">{{ label }}</label>
+  <div class="field-with-toggle">
+    <input id="{{ id }}" name="{{ name }}" type="password" autocomplete="off"
+           value="{{ value }}" {% if required %}required{% endif %} />
+    <button type="button" class="reveal-toggle" data-target="{{ id }}" aria-label="Show">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+        <circle cx="12" cy="12" r="3" />
+        <line class="slash" x1="2" y1="2" x2="22" y2="22" />
+      </svg>
+    </button>
+  </div>
+</div>
+{% endmacro %}
+
+{% block content %}
+<div class="settings-column">
+  <section class="hero">
+    <div class="hero-text">
+      <span class="eyebrow">Account</span>
+      <h1>Settings</h1>
+    </div>
+  </section>
+
+  {% if error %}
+  <p class="settings-error">{{ error }}</p>
+  {% endif %}
+
+  {% if has_credentials %}
+  <form id="revoke-balances" method="post" action="/settings/balances/revoke" hidden></form>
+  {% endif %}
+
+  <form method="post" action="/settings/balances"
+        class="settings-card balances-form" aria-labelledby="balances-title">
+    <div class="settings-card-head">
+      <h2 class="panel-title" id="balances-title">Comdirect</h2>
+      <span class="settings-status {{ 'is-on' if balances_enabled and has_credentials }}">
+        {{ "Not configured" if not has_credentials else ("On" if balances_enabled else "Off") }}
+      </span>
+    </div>
+
+    <div class="settings-card-body">
+      <div class="checkbox-row">
+        <input id="balances-enabled" name="enabled" type="checkbox" value="true"
+               {% if balances_enabled %}checked{% endif %} />
+        <label for="balances-enabled">Load balances from the bank</label>
+      </div>
+      <div class="balances-credentials">
+        <div class="balances-credentials-inner">
+          {{ secret_field("client-id", "client_id", "Client ID",
+                          credentials.client_id if credentials else "") }}
+          {{ secret_field("client-secret", "client_secret", "Client secret",
+                          credentials.client_secret if credentials else "") }}
+          {{ secret_field("access-number", "access_number", "Access number",
+                          credentials.access_number if credentials else "") }}
+          {{ secret_field("pin", "pin", "PIN",
+                          credentials.pin if credentials else "") }}
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-card-foot">
+      {% if has_credentials %}
+      <button type="submit" form="revoke-balances" class="ghost-button is-danger">
+        Revoke
+      </button>
+      {% endif %}
+      <button type="submit" class="primary-button">Save</button>
+    </div>
+  </form>
+
+  {% if is_admin %}
+  {% if anthropic_state.stored %}
+  <form id="revoke-anthropic" method="post" action="/settings/anthropic/revoke" hidden></form>
+  {% endif %}
+
+  <form method="post" action="/settings/anthropic"
+        class="settings-card" aria-labelledby="anthropic-title">
+    <div class="settings-card-head">
+      <h2 class="panel-title" id="anthropic-title">Anthropic</h2>
+      <span class="settings-status {{ 'is-on' if anthropic_state.stored }}">
+        {% if anthropic_state.stored %}Stored
+        {%- elif anthropic_state.configured %}Key from .env
+        {%- else %}Not configured{% endif %}
+      </span>
+    </div>
+
+    <div class="settings-card-body">
+      {{ secret_field("anthropic-key", "key", "API key",
+                      anthropic_key or "", required=true) }}
+    </div>
+
+    <div class="settings-card-foot">
+      {% if anthropic_state.stored %}
+      <button type="submit" form="revoke-anthropic" class="ghost-button is-danger">
+        Revoke
+      </button>
+      {% endif %}
+      <button type="submit" class="primary-button">Save</button>
+    </div>
+  </form>
+  {% endif %}
+</div>
+<script src="{{ static_url('settings.js') }}"></script>
+{% endblock %}

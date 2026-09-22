@@ -20,6 +20,7 @@ from app.services.merchants import MerchantService
 from app.services.patterns import PatternService
 from app.services.recurring import RecurringService
 from app.services.review import ReviewService
+from app.services.settings import SettingsService
 from app.services.trips import MAX_SPLIT_WAYS, TripService
 
 __all__ = [
@@ -32,5 +33,6 @@ __all__ = [
     "PatternService",
     "RecurringService",
     "ReviewService",
+    "SettingsService",
     "TripService",
 ]

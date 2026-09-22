@@ -10,6 +10,7 @@ from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 
 from app.config import get_logger, settings
 from app.models import (
+    AnthropicKey,
     CategoryRule,
     ComdirectBalanceSnapshot,
     ComdirectCredentials,
@@ -23,6 +24,7 @@ from app.models import (
     TripAssignment,
     User,
 )
+from app.services.settings import SettingsService
 
 logger = get_logger(__name__)
 
@@ -56,8 +58,10 @@ class DatabaseManager:
                 DismissedTripProposal,
                 PatternDismissal,
                 User,
+                AnthropicKey,
             ],
         )
+        await SettingsService.load_anthropic_key()
         logger.info("Database connection established and Beanie initialized")
 
     async def disconnect(self) -> None:

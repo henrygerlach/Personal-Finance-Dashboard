@@ -58,6 +58,21 @@ class ComdirectBalanceService:
             await ComdirectCredentials(user_id=user_id, **fields).insert()
 
     @classmethod
+    async def credentials(cls, user_id) -> dict | None:
+        """This user's saved login, decrypted for the settings form."""
+        credentials = await ComdirectCredentials.find_one(
+            ComdirectCredentials.user_id == user_id
+        )
+        if credentials is None:
+            return None
+        return {
+            "client_id": decrypt(credentials.client_id),
+            "client_secret": decrypt(credentials.client_secret),
+            "access_number": decrypt(credentials.access_number),
+            "pin": decrypt(credentials.pin),
+        }
+
+    @classmethod
     async def status(cls, user_id) -> dict:
         """What the balances panel needs: state, and the latest stored data."""
         credentials = await ComdirectCredentials.find_one(

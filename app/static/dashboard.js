@@ -312,6 +312,7 @@
   }
 
   async function refreshComdirectStatus() {
+    if (!el("balances-grid")) return;
     let status;
     try {
       const response = await fetch("/api/comdirect/status");
@@ -324,10 +325,8 @@
     renderBalancesFromStatus(status);
     if (status.pending) {
       setBalancesAction("Confirm photoTAN", confirmComdirectSession);
-    } else if (status.has_credentials) {
-      setBalancesAction("Refresh", startComdirectSession);
     } else {
-      setBalancesAction("Connect", openComdirectModal);
+      setBalancesAction("Refresh", startComdirectSession);
     }
   }
 
@@ -359,46 +358,6 @@
       return;
     }
     refreshComdirectStatus();
-  }
-
-  function openComdirectModal() {
-    const modal = el("comdirect-modal");
-    el("comdirect-error").textContent = "";
-    modal.hidden = false;
-    document.body.classList.add("modal-open");
-    requestAnimationFrame(() => modal.classList.add("show"));
-  }
-
-  function closeComdirectModal() {
-    const modal = el("comdirect-modal");
-    modal.classList.remove("show");
-    modal.hidden = true;
-    document.body.classList.remove("modal-open");
-  }
-
-  function wireComdirectModal() {
-    const modal = el("comdirect-modal");
-    if (!modal) return;
-    el("comdirect-close").addEventListener("click", closeComdirectModal);
-    modal.addEventListener("click", (event) => {
-      if (event.target === modal) closeComdirectModal();
-    });
-    document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && !modal.hidden) closeComdirectModal();
-    });
-    el("comdirect-form").addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const form = event.target;
-      try {
-        await postComdirect("/api/comdirect/credentials", new FormData(form));
-      } catch (error) {
-        el("comdirect-error").textContent = error.message;
-        return;
-      }
-      form.reset();
-      closeComdirectModal();
-      await startComdirectSession();
-    });
   }
 
   // --- Category spectrum ----------------------------------------------------
@@ -1495,7 +1454,6 @@
     themeCharts();
     wireMultiselect();
     wireDetailModal();
-    wireComdirectModal();
     refreshComdirectStatus();
 
     updateFilterLabel();

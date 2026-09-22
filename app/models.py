@@ -774,9 +774,38 @@ class User(Document):
             "app.auth.verify_password."
         ),
     )
+    balances_enabled: bool = Field(
+        False,
+        description=(
+            "Whether this user's dashboard loads balances from the bank. Off "
+            "by default: talking to Comdirect is a decision, not a default, "
+            "and a fresh account has no credentials to do it with anyway."
+        ),
+    )
     created_at: datetime = Field(
         default_factory=datetime.utcnow, description="When the account was made."
     )
 
     class Settings:
         name = "users"
+
+
+class AnthropicKey(Document):
+    """
+    The Anthropic API key classification runs on.
+
+    Unlike every other document in this file, this one is app-wide and
+    admin-owned rather than ``user_id``-scoped: there is one key for the
+    whole installation, supplied by whichever account is derived as the
+    admin (the oldest ``User`` by ``created_at``; see
+    ``SettingsService.admin_id``). A single row is kept here, Fernet-
+    encrypted the same way as ``ComdirectCredentials``.
+    """
+
+    key: str = Field(..., description="Fernet ciphertext of the API key.")
+    created_at: datetime = Field(
+        default_factory=datetime.utcnow, description="When the key was saved."
+    )
+
+    class Settings:
+        name = "anthropic_key"

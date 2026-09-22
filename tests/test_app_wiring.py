@@ -60,8 +60,14 @@ def wiring(monkeypatch):
     async def init_beanie(database, document_models):
         initialised.append((database, document_models))
 
+    async def load_anthropic_key():
+        pass
+
     monkeypatch.setattr(database_module, "AsyncIOMotorClient", FakeClient)
     monkeypatch.setattr(database_module, "init_beanie", init_beanie)
+    monkeypatch.setattr(
+        database_module.SettingsService, "load_anthropic_key", load_anthropic_key
+    )
     return SimpleNamespace(initialised=initialised)
 
 
@@ -105,6 +111,7 @@ def test_every_document_model_is_registered(wiring):
     reading as a Beanie problem rather than a missing line here.
     """
     from app.models import (
+        AnthropicKey,
         CategoryRule,
         ComdirectBalanceSnapshot,
         ComdirectCredentials,
@@ -135,7 +142,28 @@ def test_every_document_model_is_registered(wiring):
         TripAssignment,
         DismissedTripProposal,
         PatternDismissal,
+        AnthropicKey,
     }
+
+
+def test_connecting_applies_a_stored_anthropic_key(wiring, monkeypatch):
+    """
+    Run after ``init_beanie`` so the maintenance scripts, which all call
+    ``db_manager.connect()``, pick up an admin-saved key too — not just the
+    running dashboard.
+    """
+    called = []
+
+    async def load_anthropic_key():
+        called.append(True)
+
+    monkeypatch.setattr(
+        database_module.SettingsService, "load_anthropic_key", load_anthropic_key
+    )
+
+    run(DatabaseManager().connect())
+
+    assert called == [True]
 
 
 def test_beanie_is_initialised_against_the_database_that_was_opened(

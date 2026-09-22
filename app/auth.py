@@ -4,10 +4,12 @@ Password hashing and the session-backed login every route depends on.
 
 import hashlib
 import secrets
+from typing import Annotated
 
-from fastapi import HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 
 from app.models import User, object_id
+from app.services import SettingsService
 
 #: NIST's current floor for PBKDF2-HMAC-SHA256. Stdlib rather than a library:
 #: bcrypt/argon2 would be the stronger choice for a public app, but this one
@@ -64,3 +66,20 @@ async def current_user(request: Request) -> User:
         if user is not None:
             return user
     raise AuthRequired()
+
+
+async def admin_user(user: Annotated[User, Depends(current_user)]) -> User:
+    """
+    The signed-in user, refused unless they are the admin.
+
+    Depends on ``current_user`` rather than resolving it again, so a route
+    declaring both gets one session lookup, not two. Only the two
+    Anthropic-key routes depend on this — everything else on /settings is a
+    user's own Comdirect login and balance toggle.
+
+    Raises:
+        HTTPException: 403, when the signed-in user is not the admin.
+    """
+    if not await SettingsService.is_admin(user):
+        raise HTTPException(status_code=403, detail="Admin only")
+    return user

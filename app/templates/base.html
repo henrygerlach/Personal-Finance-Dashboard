@@ -126,6 +126,14 @@
 
         <span class="nav-rule" aria-hidden="true"></span>
 
+        <a
+          class="nav-link{% if active_path == '/settings' %} active{% endif %}"
+          href="/settings"
+          {% if active_path == "/settings" %}aria-current="page"{% endif %}
+        >
+          Settings
+        </a>
+
         <form class="nav-logout" method="post" action="/logout">
           <button type="submit" class="nav-link">Logout</button>
         </form>

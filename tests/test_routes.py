@@ -102,7 +102,9 @@ def client():
     """
     app = FastAPI()
     app.include_router(routes.router)
-    app.dependency_overrides[current_user] = lambda: SimpleNamespace(id=USER_OID)
+    app.dependency_overrides[current_user] = lambda: SimpleNamespace(
+        id=USER_OID, balances_enabled=False
+    )
     return TestClient(app)
 
 
@@ -794,6 +796,144 @@ def test_comdirect_routes_require_a_session():
     assert anonymous.get("/api/comdirect/status").status_code == 401
     assert anonymous.post("/api/comdirect/session").status_code == 401
     assert anonymous.post("/api/comdirect/session/confirm").status_code == 401
+
+
+# --- Settings -------------------------------------------------------------
+
+
+def test_settings_renders_the_state_a_non_admin_sees(monkeypatch, client, templates):
+    """No key section, and no state fetched for one, for anyone but the admin."""
+    monkeypatch.setattr(routes.SettingsService, "is_admin", returning(False))
+    monkeypatch.setattr(
+        routes.ComdirectBalanceService, "status", returning({"has_credentials": False})
+    )
+
+    client.get("/settings")
+
+    context = context_of(templates, "settings.html")
+    assert context["is_admin"] is False
+    assert context["anthropic_state"] is None
+    assert context["has_credentials"] is False
+
+
+def test_settings_renders_the_admins_key_state(monkeypatch, client, templates):
+    monkeypatch.setattr(routes.SettingsService, "is_admin", returning(True))
+    monkeypatch.setattr(
+        routes.ComdirectBalanceService, "status", returning({"has_credentials": True})
+    )
+    monkeypatch.setattr(
+        routes.ComdirectBalanceService,
+        "credentials",
+        returning(
+            {
+                "client_id": "id",
+                "client_secret": "secret",
+                "access_number": "1234",
+                "pin": "5678",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        routes.SettingsService,
+        "anthropic_state",
+        returning({"configured": True, "stored": True, "created_at": None}),
+    )
+    monkeypatch.setattr(routes.SettingsService, "anthropic_key", returning("sk-stored"))
+
+    client.get("/settings")
+
+    context = context_of(templates, "settings.html")
+    assert context["is_admin"] is True
+    assert context["anthropic_state"]["stored"] is True
+    assert context["anthropic_key"] == "sk-stored"
+
+
+def test_the_anthropic_routes_are_403_for_a_non_admin(monkeypatch, client):
+    monkeypatch.setattr(routes.SettingsService, "is_admin", returning(False))
+
+    assert client.post("/settings/anthropic", data={"key": "sk-x"}).status_code == 403
+    assert client.post("/settings/anthropic/revoke").status_code == 403
+
+
+def test_saving_balances_with_credentials_saves_then_enables(monkeypatch, client):
+    """The single form does both, credentials first so enabling can succeed."""
+    save = recording()
+    enable = recording()
+    monkeypatch.setattr(routes.ComdirectBalanceService, "save_credentials", save)
+    monkeypatch.setattr(routes.SettingsService, "set_balances_enabled", enable)
+
+    response = client.post(
+        "/settings/balances",
+        data={
+            "enabled": "true",
+            "client_id": "id",
+            "client_secret": "secret",
+            "access_number": "123",
+            "pin": "456",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert len(save.calls) == 1
+    assert enable.calls[0][0][1] is True
+
+
+def test_saving_balances_with_some_but_not_all_fields_is_refused(monkeypatch, client):
+    monkeypatch.setattr(routes.SettingsService, "is_admin", returning(False))
+    monkeypatch.setattr(
+        routes.ComdirectBalanceService, "status", returning({"has_credentials": False})
+    )
+    save = recording()
+    monkeypatch.setattr(routes.ComdirectBalanceService, "save_credentials", save)
+
+    response = client.post(
+        "/settings/balances",
+        data={"enabled": "true", "client_id": "id"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 422
+    assert save.calls == []
+
+
+def test_saving_balances_with_no_fields_only_applies_the_toggle(monkeypatch, client):
+    """Blank fields leave an existing login alone; only the toggle moves."""
+    save = recording()
+    enable = recording()
+    monkeypatch.setattr(routes.ComdirectBalanceService, "save_credentials", save)
+    monkeypatch.setattr(routes.SettingsService, "set_balances_enabled", enable)
+
+    response = client.post(
+        "/settings/balances", data={"enabled": "false"}, follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    assert save.calls == []
+    assert enable.calls[0][0][1] is False
+
+
+def test_revoking_balances_uses_the_merged_route(monkeypatch, client):
+    revoke = recording()
+    monkeypatch.setattr(routes.SettingsService, "revoke_comdirect", revoke)
+
+    response = client.post("/settings/balances/revoke", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert len(revoke.calls) == 1
+
+
+def test_the_dashboard_context_carries_balances_enabled(templates):
+    app = FastAPI()
+    app.include_router(routes.router)
+    app.dependency_overrides[current_user] = lambda: SimpleNamespace(
+        id=USER_OID, balances_enabled=True
+    )
+    on_client = TestClient(app)
+
+    on_client.get("/")
+
+    assert context_of(templates, "dashboard.html")["balances_enabled"] is True
 
 
 # --- Classification -----------------------------------------------------------

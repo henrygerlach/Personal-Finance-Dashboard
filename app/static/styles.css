@@ -1104,6 +1104,76 @@ input:disabled {
   cursor: not-allowed;
 }
 
+/* Credentials only matter once the toggle wants them; the fold-out from
+   0fr to 1fr sizes itself to the fields rather than a guessed max-height,
+   and answers the one action on this page worth animating: opening. */
+.balances-credentials {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.2s ease;
+}
+
+.balances-form:has(#balances-enabled:checked) .balances-credentials {
+  grid-template-rows: 1fr;
+}
+
+.balances-credentials-inner {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--gap-md);
+  overflow: hidden;
+}
+
+/* The separator is hung on the open state rather than on the fold-out
+   itself: a margin, a padding and a border are not clipped by the row
+   collapsing to 0fr, so carrying them unconditionally left a stray hairline
+   and a band of empty card below the toggle whenever it was switched off. */
+.balances-form:has(#balances-enabled:checked) .balances-credentials-inner {
+  margin-top: var(--gap-md);
+  padding-top: var(--gap-md);
+  border-top: 1px solid var(--rule);
+}
+
+.field-with-toggle {
+  position: relative;
+}
+
+.field-with-toggle input {
+  padding-right: 40px;
+}
+
+.reveal-toggle {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--paper-faint);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.reveal-toggle:hover {
+  background: var(--ink-3);
+  color: var(--paper);
+}
+
+.reveal-toggle .slash {
+  display: none;
+}
+
+.reveal-toggle.is-active .slash {
+  display: block;
+}
+
 .checkbox-row {
   display: flex;
   align-items: flex-start;
@@ -4024,4 +4094,93 @@ input:disabled {
   .owned-count {
     display: none;
   }
+}
+
+/* ==========================================================================
+   Settings
+
+   A settings page is read one decision at a time, so it is one centred
+   column rather than the full-bleed grid every other page uses: a text
+   field stretched across 1600px looks like a mistake.
+   ========================================================================== */
+
+.settings-column {
+  width: min(720px, 100%);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-lg);
+}
+
+.settings-card {
+  background: var(--ink-1);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  padding: var(--gap-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-md);
+}
+
+.settings-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--gap-md);
+}
+
+/* Whether the setting is on is the first thing worth knowing about it, so it
+   sits on the title line and not beside the save button, where it read as a
+   caption belonging to the button. Monochrome: on is simply the brighter of
+   the two, because a state nobody has to act on is not a signal. */
+.settings-status {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  border: 1px solid var(--rule-strong);
+  border-radius: 999px;
+  padding: 0 0.5rem;
+  color: var(--paper-faint);
+}
+
+.settings-status.is-on {
+  color: var(--paper);
+  border-color: var(--paper-dim);
+}
+
+/* The fold-out supplies its own spacing as it opens, so the body holds the
+   fields with no gap of its own — a closed fold-out leaves no empty band. */
+.settings-card-body {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Full-bleed, on the surface above the card: the actions are a band the card
+   ends with rather than two buttons left floating under the last field. */
+.settings-card-foot {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: var(--gap-sm);
+  margin: 0 calc(-1 * var(--gap-lg)) calc(-1 * var(--gap-lg));
+  padding: var(--gap-md) var(--gap-lg);
+  background: var(--ink-2);
+  border-top: 1px solid var(--rule);
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+}
+
+/* Destroying and saving are opposite decisions and sit at opposite ends. */
+.settings-card-foot .is-danger {
+  margin-right: auto;
+}
+
+.settings-error {
+  font-size: 0.9rem;
+  color: var(--paper);
+  background: var(--ink-1);
+  border: 1px solid var(--neg);
+  border-radius: var(--radius-md);
+  padding: var(--gap-sm) var(--gap-md);
 }

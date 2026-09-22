@@ -19,7 +19,7 @@ from fastapi import (
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from app.auth import current_user, hash_password, verify_password
+from app.auth import admin_user, current_user, hash_password, verify_password
 from app.categories import CATEGORY_HIERARCHY as NEW_CATEGORY_HIERARCHY
 from app.categorizer import Categorizer
 from app.classification.client import ClassificationError
@@ -40,6 +40,7 @@ from app.services import (
     PatternService,
     RecurringService,
     ReviewService,
+    SettingsService,
     TripService,
 )
 
@@ -217,6 +218,7 @@ async def dashboard(request: Request, user: CurrentUser) -> HTMLResponse:
             "request": request,
             "title": "Dashboard",
             "active_path": "/",
+            "balances_enabled": user.balances_enabled,
             **await nav_counts(user.id),
         },
     )
@@ -836,6 +838,114 @@ async def delete_rule(rule_id: str, user: CurrentUser) -> RedirectResponse:
 
 
 # ============================================================================
+# Settings
+# ============================================================================
+
+
+async def _settings_context(request: Request, user: User) -> dict:
+    """The context every /settings render needs, success or refusal alike."""
+    is_admin = await SettingsService.is_admin(user)
+    status = await ComdirectBalanceService.status(user.id)
+    credentials = (
+        await ComdirectBalanceService.credentials(user.id)
+        if status["has_credentials"]
+        else None
+    )
+    return {
+        "request": request,
+        "title": "Settings",
+        "active_path": "/settings",
+        **await nav_counts(user.id),
+        "is_admin": is_admin,
+        "anthropic_state": (
+            await SettingsService.anthropic_state() if is_admin else None
+        ),
+        "anthropic_key": (await SettingsService.anthropic_key() if is_admin else None),
+        "has_credentials": status["has_credentials"],
+        "credentials": credentials,
+        "balances_enabled": user.balances_enabled,
+    }
+
+
+@router.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: Request, user: CurrentUser) -> HTMLResponse:
+    """Render the settings page."""
+    templates = get_templates()
+    return templates.TemplateResponse(
+        "settings.html", await _settings_context(request, user)
+    )
+
+
+async def _settings_refused(request: Request, user: User, error: str) -> HTMLResponse:
+    templates = get_templates()
+    context = await _settings_context(request, user)
+    context["error"] = error
+    return templates.TemplateResponse("settings.html", context, status_code=422)
+
+
+@router.post("/settings/balances", response_class=HTMLResponse, response_model=None)
+async def save_settings_balances(
+    request: Request,
+    user: CurrentUser,
+    enabled: Annotated[bool, Form()] = False,
+    client_id: Annotated[str, Form()] = "",
+    client_secret: Annotated[str, Form()] = "",
+    access_number: Annotated[str, Form()] = "",
+    pin: Annotated[str, Form()] = "",
+) -> HTMLResponse | RedirectResponse:
+    """
+    Save a Comdirect login, if one was entered, then apply the toggle.
+
+    The two are one form and one button: credentials are only worth entering
+    to turn the snapshot on, so saving them and enabling it happen together.
+    Blank fields leave an existing login as it is, letting the toggle move on
+    its own once a login is already stored.
+    """
+    fields = [client_id, client_secret, access_number, pin]
+    try:
+        if any(fields):
+            if not all(fields):
+                raise ValueError("Fill in all four Comdirect fields, or none.")
+            await ComdirectBalanceService.save_credentials(
+                user.id, client_id, client_secret, access_number, pin
+            )
+        await SettingsService.set_balances_enabled(user, enabled)
+    except ValueError as error:
+        return await _settings_refused(request, user, str(error))
+    return RedirectResponse(url="/settings", status_code=303)
+
+
+@router.post("/settings/balances/revoke")
+async def revoke_settings_balances(user: CurrentUser) -> RedirectResponse:
+    """Delete this user's Comdirect login and switch the snapshot off."""
+    await SettingsService.revoke_comdirect(user)
+    return RedirectResponse(url="/settings", status_code=303)
+
+
+@router.post("/settings/anthropic", response_class=HTMLResponse, response_model=None)
+async def save_settings_anthropic(
+    request: Request,
+    user: Annotated[User, Depends(admin_user)],
+    key: Annotated[str, Form()],
+) -> HTMLResponse | RedirectResponse:
+    """Save the app-wide Anthropic API key."""
+    try:
+        await SettingsService.save_anthropic_key(key)
+    except ValueError as error:
+        return await _settings_refused(request, user, str(error))
+    return RedirectResponse(url="/settings", status_code=303)
+
+
+@router.post("/settings/anthropic/revoke")
+async def revoke_settings_anthropic(
+    user: Annotated[User, Depends(admin_user)],
+) -> RedirectResponse:
+    """Delete the stored Anthropic key and fall back to .env."""
+    await SettingsService.revoke_anthropic_key()
+    return RedirectResponse(url="/settings", status_code=303)
+
+
+# ============================================================================
 # API Routes - Analytics
 # ============================================================================
 
@@ -932,24 +1042,6 @@ async def get_transaction_detail(
 async def get_comdirect_status(user: CurrentUser) -> dict:
     """State the balances panel renders from: credentials, pending, data."""
     return await ComdirectBalanceService.status(user.id)
-
-
-@router.post("/api/comdirect/credentials")
-async def save_comdirect_credentials(
-    user: CurrentUser,
-    client_id: Annotated[str, Form()],
-    client_secret: Annotated[str, Form()],
-    access_number: Annotated[str, Form()],
-    pin: Annotated[str, Form()],
-) -> dict:
-    """Save one user's Comdirect login, Fernet-encrypted."""
-    try:
-        await ComdirectBalanceService.save_credentials(
-            user.id, client_id, client_secret, access_number, pin
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail=str(error))
-    return {"status": "success"}
 
 
 @router.post("/api/comdirect/session")
