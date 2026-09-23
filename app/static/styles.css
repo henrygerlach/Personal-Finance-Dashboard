@@ -535,13 +535,6 @@ a {
   justify-content: center;
 }
 
-/* A column has already done the narrowing, so an empty state inside one
-   fills it — capping it again would leave it visibly short of the upload
-   zone and the cards it stands in for. */
-.page-column .panel-outline.is-centered {
-  width: 100%;
-}
-
 .panel-text {
   color: var(--paper-dim);
 }
@@ -1857,11 +1850,6 @@ input:disabled {
 }
 
 /* --- Needs Review ------------------------------------------------------- */
-
-.review-list {
-  display: grid;
-  gap: var(--gap-md);
-}
 
 .review-facts {
   display: flex;
@@ -4083,22 +4071,31 @@ input:disabled {
 /* ==========================================================================
    The form card
 
-   Settings, review and upload are worked one decision at a time rather than
-   read across, so they are a single centred column rather than the full-bleed
-   grid the chart pages use: a text field stretched across 1600px looks like a
-   mistake, and so does a queue of one-line items.
+   Settings, review and upload take the same full width as the chart pages,
+   but their cards tile rather than stretch: a text field across 1600px looks
+   like a mistake.
 
-   Every card in that column is the same three bands — what it is, the fields,
+   Every card on those pages is the same three bands — what it is, the fields,
    then the actions on a footer of their own — so a settings form and a
    transaction awaiting a category are the same object to read.
    ========================================================================== */
 
-.page-column {
-  width: min(720px, 100%);
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
+.page-column,
+.review-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(440px, 100%), 1fr));
+  align-items: start;
   gap: var(--gap-lg);
+}
+
+.page-column > :not(.form-card) {
+  grid-column: 1 / -1;
+}
+
+.page-column > .upload-zone,
+.page-column > .upload-result {
+  width: min(560px, 100%);
+  justify-self: center;
 }
 
 .form-card {
