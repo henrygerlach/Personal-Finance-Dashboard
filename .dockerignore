@@ -1,0 +1,15 @@
+.git
+.env
+.env.*
+.venv
+venv
+backups
+paypal_data
+logs
+tests
+sample_data
+assets
+**/__pycache__
+.pytest_cache
+.mypy_cache
+.ruff_cache

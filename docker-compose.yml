@@ -1,0 +1,34 @@
+# Server deployment: `docker compose up -d --build`, then http://127.0.0.1:8000.
+# Reached from other devices through `tailscale serve` (HTTPS on the tailnet
+# only); nothing is published beyond localhost.
+#
+# Maintenance scripts run inside the app container, e.g.
+#   docker compose exec app python scripts/create_user.py <name>
+# Backup:
+#   docker compose exec -T mongo mongodump --db=bank_analyzer_dev --archive --gzip \
+#     > backups/bank_analyzer_dev-$(date +%Y%m%d-%H%M%S).archive.gz
+
+services:
+  mongo:
+    image: mongo:8
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MONGODB_URL: mongodb://mongo:27017
+      DATABASE_NAME: bank_analyzer_dev
+    volumes:
+      - ./paypal_data:/app/paypal_data
+      - ./logs:/app/logs
+    depends_on:
+      - mongo
+    ports:
+      - "127.0.0.1:8000:8000"
+
+volumes:
+  mongo_data:
