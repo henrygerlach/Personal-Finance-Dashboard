@@ -107,7 +107,12 @@ ensure_docker() {
   if command -v colima >/dev/null 2>&1; then
     # colima start blocks until the VM is up, so no polling loop is needed here. It can
     # take a minute on the first start after a reboot.
+    #
+    # A reboot or crash while Colima runs leaves its disk locked ("in use by instance
+    # colima") and every later start fails at once. A forced stop clears that stale
+    # state, so one retry after it is enough.
     colima start >>"$LOG" 2>&1 \
+      || { colima stop --force >>"$LOG" 2>&1; colima start >>"$LOG" 2>&1; } \
       || fail "Colima could not be started. Details in the log: $LOG"
   elif [ -d /Applications/Docker.app ] || [ -d "$HOME/Applications/Docker.app" ]; then
     open -a Docker >/dev/null 2>&1 \
